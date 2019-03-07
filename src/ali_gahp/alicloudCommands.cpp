@@ -1336,7 +1336,7 @@ bool AlicloudRequest::sendPreparedRequest(
     // We don't check the deadline after the retry because limitExceeded()
     // already checks.  (limitNotExceeded() does not, but if we call that
     // then the request has succeeded and we won't be retrying.)
-    globalCurlThrottle.setDeadline( signatureTime, 6000 );
+    globalCurlThrottle.setDeadline( signatureTime, 300 );
     struct timespec liveline = globalCurlThrottle.getWhen();
     struct timespec deadline = globalCurlThrottle.getDeadline();
     if( Throttle::difference( & liveline, & deadline ) < 0 ) {
