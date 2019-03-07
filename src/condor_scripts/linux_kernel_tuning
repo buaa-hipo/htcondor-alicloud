@@ -1,0 +1,187 @@
+#!/bin/sh
+
+##
+## This script tunes Linux kernel parameters useful for scaling HTCondor.
+## Some values may be inappropriate for machines not dedicated to HTCondor.
+## This script must be run as root, and we assume that (and support only)
+## HTCondor is running as root for large installations.
+##
+## The next '##' sections marks the beginning of the implementation section
+## of this script, and you should not need to change anything past that mark.
+##
+
+#
+# This script logs its actions to syslog.  If you'd rather it didn't,
+# change the line below to something like '/bin/true'.
+#
+LOGGER='/usr/bin/logger -t htcondor'
+
+#
+# Increase the global number of file descriptors.  For example, each
+# dynamically-linked shadow uses approximately 13 just to open its
+# libraries.
+#
+# We don't set the per-process maximum, because HTCondor will do that
+# appropriately for each different subsystem (daemon) when run as root.
+# If necessary, you can change those values using the configuration variables
+# MAX_FILE_DESCRIPTORS and <SUBSYS>_MAX_FILE_DESCRIPTORS.
+#
+GLOBAL_MAX_FDS=32768
+
+#
+# Increase the maximum process ID.  By default, Linux process IDs wrap at
+# 32768, which isn't a lot of processes when you have one per running job.
+#
+GLOBAL_MAX_PROCESSES=4194303
+
+#
+# Unless otherwise specified, an outbound connection uses a port within
+# this range.  On some systems, this default to 1024-4999, which may not
+# be enough.  You can also force HTCondor to specify a particular
+# outbound port by setting the configuration variables OUT_LOWPORT and
+# OUT_HIGHPORT appropriately, but this will be slower under load, as
+# HTCondor has to search for an open port.
+#
+LOCAL_PORT_RANGE="1024 65535"
+
+#
+# Increase the length of the TCP listen queue.  This allows more connections
+# to pile up while HTCondor is otherwise busy.
+#
+TCP_LISTEN_QUEUE=1024
+
+#
+# Likewise, the central manager (collector) needs have large UDP buffers.
+# Increase the maximum allowed size of networks receive buffers.
+#
+MAX_RECEIVE_BUFFER=10485760
+
+# Maximum amount of dirty filesystem bytes to buffer in the kernel
+# before processes writing to the filesystem are blocked, and made
+# to do their own i/o synchronously.  Set to 0 to undo.
+# If we are running with cgroups on, there's a Linux kernel bug
+# that causes spurious OOM events sent to a cgroup with a hard memory limit
+# if it writes a lot of data to the filesystem quickly.  Limitting
+# the buffering to 100M works around the problem
+DIRTY_BYTES=100000000
+
+# Set root user quota for max number of kernel session keys and
+# bytes.  Kernel session keys are used by Kerberos, AFS, ecryptfs, and
+# other services.  The condor_master creates a new session keyring by
+# default on startup (via config knob DISCARD_SESSION_KEYRING_ON_STARTUP)
+# so that Kerberos tokens and the like are not leaked to user jobs, and
+# also to support encrypted execute directories.  The default quota
+# starting with RHEL 6.4 is 1M keys and 25M bytes, which is plenty
+# big.  But older kernels (like what shipped in RHEL 6.0) have a crazy
+# small quota of 200 keys.  So here we just set these params to what
+# RHEL 6.4+ use by default just in case people try to use HTCondor on
+# an earlier kernel.
+ROOT_MAXKEYS=1000000
+ROOT_MAXKEYS_BYTES=25000000
+
+##
+## Implementation.  You shouldn't need to change anything below here.
+##
+
+LOG=/dev/null
+if [ -d /etc/sysctl.d ]; then
+	LOG=/etc/sysctl.d/99-htcondor.conf
+	(
+		echo "#"
+		echo "# This file was written by $0"
+		echo "# when the condor_master started up."
+		echo "#"
+		echo "# This script tunes kernel parameters to support HTCondor at"
+		echo "# larger scales.  A list of the changes follows.  You can set"
+		echo "# ENABLE_KERNEL_TUNING = FALSE"
+		echo "# in your HTCondor configuration to disable this entirely, or"
+		echo "# set LINUX_KERNEL_TUNING_SCRIPT to some other file to change"
+		echo "# which script is run when the condor_master daemon starts."
+		echo "#"
+	) > ${LOG}
+fi
+
+increaseKernelParameter() {
+	PARAMETER=$1
+	FILE=$2
+	NEW=$3
+
+	if [ -n "${NEW}" ]; then
+		OLD=`cat ${FILE}`
+		if [ ${NEW} -gt ${OLD} ]; then
+			echo "Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}"
+			echo "# Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}" >> ${LOG}
+			echo "Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}" | ${LOGGER}
+			echo ${NEW} > ${FILE}
+		else
+			echo "Not changing ${PARAMETER} (${FILE}): new value (${NEW}) <= old value (${OLD})."
+			echo "# Not changing ${PARAMETER} (${FILE}): new value (${NEW}) <= old value (${OLD})." >> ${LOG}
+			echo "Not changing ${PARAMETER} (${FILE}): new value (${NEW}) <= old value (${OLD})." | ${LOGGER}
+		fi
+	fi
+}
+
+setKernelParameter() {
+	PARAMETER=$1
+	FILE=$2
+	NEW=$3
+
+	if [ -n "${NEW}" ]; then
+		OLD=`cat ${FILE}`
+		echo "Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}"
+		echo "# Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}" >> ${LOG}
+		echo "Changing ${PARAMETER} (${FILE}) from ${OLD} to ${NEW}" | ${LOGGER}
+		echo ${NEW} > ${FILE}
+	fi
+}
+
+increaseKernelParameter "GLOBAL_MAX_FDS" "/proc/sys/fs/file-max" ${GLOBAL_MAX_FDS}
+
+# Set GLOBAL_MAX_PROCESSES and LOCAL_PORT_TRANGE only for schedd machines.
+daemonList=`condor_config_val DAEMON_LIST | sed -e's/,/ /g'`
+for daemon in $daemonList; do
+	daemonFile=`condor_config_val ${daemon}`
+	if [ -n "${daemonFile}" ]; then
+		baseName=`basename ${daemonFile}`
+		if [ ${baseName} = "condor_schedd" ]; then
+			increaseKernelParameter "GLOBAL_MAX_PROCESSES" "/proc/sys/kernel/pid_max" ${GLOBAL_MAX_PROCESSES}
+			setKernelParameter "LOCAL_PORT_RANGE" "/proc/sys/net/ipv4/ip_local_port_range" "${LOCAL_PORT_RANGE}"
+		fi
+	fi
+done
+
+increaseKernelParameter "TCP_LISTEN_QUEUE" "/proc/sys/net/core/somaxconn" ${TCP_LISTEN_QUEUE}
+increaseKernelParameter "ROOT_MAXKEYS" "/proc/sys/kernel/keys/root_maxkeys" ${ROOT_MAXKEYS}
+increaseKernelParameter "ROOT_MAXKEYS_BYTES" "/proc/sys/kernel/keys/root_maxbytes" ${ROOT_MAXKEYS_BYTES}
+
+if condor_config_val BASE_CGROUP > /dev/null 2>&1
+then
+	setKernelParameter "FS_CACHE_DIRTY_BYTES" "/proc/sys/vm/dirty_bytes" "${DIRTY_BYTES}"
+fi
+
+# FIXME: Only on the collector.
+increaseKernelParameter "MAX_RECEIVE_BUFFER" "/proc/sys/net/core/rmem_max" ${MAX_RECEIVE_BUFFER}
+
+# Mount cgroups if not already mounted
+# Check to see if admin has enabled cgroups in condor
+if condor_config_val BASE_CGROUP > /dev/null 2>&1
+then
+    # Admin has requested them (or left the default on)
+
+    # Check to see if they are already mounted, assume if memory is, they all are
+    if ! grep -q memory /proc/self/cgroup
+    then
+	mkdir -p /cgroup/memory
+        mount -t cgroup -o memory memory /cgroup/memory
+	mkdir -p /cgroup/cpu
+        mount -t cgroup -o cpu cpu /cgroup/cpu
+	mkdir -p /cgroup/cpuacct
+        mount -t cgroup -o cpuacct cpuacct /cgroup/cpuacct
+	mkdir -p /cgroup/blkio
+        mount -t cgroup -o blkio blkio /cgroup/blkio
+	mkdir -p /cgroup/freezer
+        mount -t cgroup -o freezer freezer /cgroup/freezer
+    fi
+fi
+
+exit 0

@@ -1,0 +1,690 @@
+/***************************************************************
+ *
+ * Copyright (C) 1990-2007, Condor Team, Computer Sciences Department,
+ * University of Wisconsin-Madison, WI.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License"); you
+ * may not use this file except in compliance with the License.  You may
+ * obtain a copy of the License at
+ * 
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ ***************************************************************/
+
+
+#include "condor_common.h"
+#include "condor_debug.h"
+#include "condor_config.h"
+#include "condor_string.h"
+#include "condor_attributes.h"
+#include "internet.h"
+#include "daemon.h"
+#include "condor_daemon_core.h"
+#include "dc_collector.h"
+
+#include <algorithm>
+
+std::map< std::string, Timeslice > DCCollector::blacklist;
+
+
+// Instantiate things
+
+DCCollector::DCCollector( const char* dcName, UpdateType uType ) 
+	: Daemon( DT_COLLECTOR, dcName, NULL )
+{
+	up_type = uType;
+	init( true );
+}
+
+void
+DCCollector::init( bool needs_reconfig )
+{
+	static long bootTime = 0;
+
+	update_rsock = NULL;
+	use_tcp = true;
+	use_nonblocking_update = true;
+	update_destination = NULL;
+
+	if (bootTime == 0) {
+		bootTime = time( NULL );
+	} 
+	startTime = bootTime;
+
+	if( needs_reconfig ) {
+		reconfig();
+	}
+}
+
+
+DCCollector::DCCollector( const DCCollector& copy ) : Daemon(copy)
+{
+	init( false );
+	deepCopy( copy );
+}
+
+
+DCCollector&
+DCCollector::operator = ( const DCCollector& copy )
+{
+		// don't copy ourself!
+    if (&copy != this) {
+		deepCopy( copy );
+	}
+
+    return *this;
+}
+
+
+void
+DCCollector::deepCopy( const DCCollector& copy )
+{
+	if( update_rsock ) {
+		delete update_rsock;
+		update_rsock = NULL;
+	}
+		/*
+		  for now, we're not going to attempt to copy the update_rsock
+		  from the copy, since i'm not sure i trust ReliSock's copy
+		  constructor to do the right thing once the original goes
+		  away... DCCollector will be able to re-create this socket
+		  for TCP updates.  it's a little expensive, since we need a
+		  whole new connect(), etc, but in most cases, we're not going
+		  to be doing this very often, and correctness is more
+		  important than speed at the moment.  once we have more time
+		  for testing, we can figure out if just copying the
+		  update_rsock works and TCP updates are still happy...
+		*/
+
+	use_tcp = copy.use_tcp;
+	use_nonblocking_update = copy.use_nonblocking_update;
+
+	up_type = copy.up_type;
+
+	if( update_destination ) {
+        delete [] update_destination;
+    }
+	update_destination = strnewp( copy.update_destination );
+
+	startTime = copy.startTime;
+
+}
+
+
+void
+DCCollector::reconfig( void )
+{
+	use_nonblocking_update = param_boolean("NONBLOCKING_COLLECTOR_UPDATE",true);
+
+	if( ! _addr ) {
+		locate();
+		if( ! _is_configured ) {
+			dprintf( D_FULLDEBUG, "COLLECTOR address not defined in "
+					 "config file, not doing updates\n" );
+			return;
+		}
+	}
+
+	parseTCPInfo();
+	initDestinationStrings();
+	displayResults();
+}
+
+
+void
+DCCollector::parseTCPInfo( void )
+{
+	switch( up_type ) {
+	case TCP:
+		use_tcp = true;
+		break;
+	case UDP:
+		use_tcp = false;
+		break;
+	case CONFIG:
+	case CONFIG_VIEW:
+		use_tcp = false;
+		char *tmp = param( "TCP_UPDATE_COLLECTORS" );
+		if( tmp ) {
+			StringList tcp_collectors;
+
+			tcp_collectors.initializeFromString( tmp );
+			free( tmp );
+ 			if( _name && 
+				tcp_collectors.contains_anycase_withwildcard(_name) )
+			{	
+				use_tcp = true;
+				break;
+			}
+		}
+		if ( up_type == CONFIG_VIEW ) {
+			use_tcp = param_boolean( "UPDATE_VIEW_COLLECTOR_WITH_TCP", false );
+		} else {
+			use_tcp = param_boolean( "UPDATE_COLLECTOR_WITH_TCP", true );
+		}
+		if( !hasUDPCommandPort() ) {
+			use_tcp = true;
+		}
+		break;
+	}
+}
+
+
+bool
+DCCollector::sendUpdate( int cmd, ClassAd* ad1, DCCollectorAdSequences& adSeq, ClassAd* ad2, bool nonblocking ) 
+{
+	if( ! _is_configured ) {
+			// nothing to do, treat it as success...
+		return true;
+	}
+
+	if(!use_nonblocking_update || !daemonCore) {
+			// Either caller OR config may turn off nonblocking updates.
+			// In other words, both must be true to enable nonblocking.
+			// Also, must have DaemonCore intialized.
+		nonblocking = false;
+	}
+
+	// Add start time & seq # to the ads before we publish 'em
+	if ( ad1 ) {
+		ad1->Assign(ATTR_DAEMON_START_TIME, startTime);
+	}
+	if ( ad2 ) {
+		ad2->Assign(ATTR_DAEMON_START_TIME, startTime);
+	}
+
+	if ( ad1 ) {
+		DCCollectorAdSeq* seqgen = adSeq.getAdSeq(*ad1);
+		if (seqgen) {
+			long long seq = seqgen->getSequence();
+			ad1->Assign(ATTR_UPDATE_SEQUENCE_NUMBER, seq);
+			if (ad2) { ad2->Assign(ATTR_UPDATE_SEQUENCE_NUMBER, seq); }
+		}
+	}
+
+		// Prior to 7.2.0, the negotiator depended on the startd
+		// supplying matching MyAddress in public and private ads.
+	if ( ad1 && ad2 ) {
+		ad2->CopyAttribute(ATTR_MY_ADDRESS,ad1);
+	}
+
+		// We never want to try sending an update to port 0.  If we're
+		// about to try that, and we're trying to talk to a local
+		// collector, we should try re-reading the address file and
+		// re-setting our port.
+	if( _port == 0 ) {
+		dprintf( D_HOSTNAME, "About to update collector with port 0, "
+				 "attempting to re-read address file\n" );
+		if( readAddressFile(_subsys) ) {
+			_port = string_to_port( _addr );
+			parseTCPInfo(); // update use_tcp
+			dprintf( D_HOSTNAME, "Using port %d based on address \"%s\"\n",
+					 _port, _addr );
+		}
+	}
+
+	if( _port <= 0 ) {
+			// If it's still 0, we've got to give up and fail.
+		std::string err_msg;
+		formatstr(err_msg, "Can't send update: invalid collector port (%d)",
+						 _port );
+		newError( CA_COMMUNICATION_ERROR, err_msg.c_str() );
+		return false;
+	}
+
+	//
+	// We don't want the collector to send TCP updates to itself, since
+	// this could cause it to deadlock.  Since the only ad a collector
+	// will ever advertise is its own, only check for *_COLLECTOR_ADS.
+	//
+	if( cmd == UPDATE_COLLECTOR_AD || cmd == INVALIDATE_COLLECTOR_ADS ) {
+		if( daemonCore ) {
+			const char * myOwnSinful = daemonCore->InfoCommandSinfulString();
+			if( myOwnSinful == NULL ) {
+				dprintf( D_ALWAYS, "Unable to determine my own address, will not update or invalidate collector ad to avoid potential deadlock.\n" );
+				return false;
+			}
+			if( _addr == NULL ) {
+				dprintf( D_ALWAYS, "Failing attempt to update or invalidate collector ad because of missing daemon address (probably an unresolved hostname; daemon name is '%s').\n", _name );
+				return false;
+			}
+			if( strcmp( myOwnSinful, _addr ) == 0 ) {
+				EXCEPT( "Collector attempted to send itself an update.\n" );
+			}
+		}
+	}
+
+	if( use_tcp ) {
+		return sendTCPUpdate( cmd, ad1, ad2, nonblocking );
+	}
+	return sendUDPUpdate( cmd, ad1, ad2, nonblocking );
+}
+
+
+
+bool
+DCCollector::finishUpdate( DCCollector *self, Sock* sock, ClassAd* ad1, ClassAd* ad2 )
+{
+	// This is a static function so that we can call it from a
+	// nonblocking startCommand() callback without worrying about
+	// longevity of the DCCollector instance.
+
+	sock->encode();
+	if( ad1 && ! putClassAd(sock, *ad1) ) {
+		if(self) {
+			self->newError( CA_COMMUNICATION_ERROR,
+			                "Failed to send ClassAd #1 to collector" );
+		}
+		return false;
+	}
+	if( ad2 && ! putClassAd(sock, *ad2) ) {
+		if(self) {
+			self->newError( CA_COMMUNICATION_ERROR,
+			          "Failed to send ClassAd #2 to collector" );
+			return false;
+		}
+	}
+	if( ! sock->end_of_message() ) {
+		if(self) {
+			self->newError( CA_COMMUNICATION_ERROR,
+			          "Failed to send EOM to collector" );
+		}
+		return false;
+	}
+	return true;
+}
+
+class UpdateData {
+
+private:
+	int cmd;
+	Stream::stream_type sock_type;
+public:
+	ClassAd *ad1;
+	ClassAd *ad2;
+	DCCollector *dc_collector;
+
+	UpdateData(int ad_cmd, Stream::stream_type stype, ClassAd *cad1, ClassAd *cad2, DCCollector *dc_collect)
+	  : cmd(ad_cmd),
+	    sock_type(stype),
+	    ad1(cad1 ? new ClassAd(*cad1) : NULL),
+	    ad2(cad2 ? new ClassAd(*cad2) : NULL),
+	    dc_collector(dc_collect)
+	{
+			// In case the collector object gets destructed before this
+			// update is finished, we need to register ourselves with
+			// the dc_collector object so that it can null out our
+			// pointer to it.  This is done using a linked-list of
+			// UpdateData objects.
+
+		dc_collect->pending_update_list.push_back(this);
+	}
+
+	~UpdateData() {
+		delete ad1;
+		delete ad2;
+			// Remove ourselves from the dc_collector's list.
+		if(dc_collector) {
+			std::deque<UpdateData *>::iterator iter = std::find(dc_collector->pending_update_list.begin(), dc_collector->pending_update_list.end(), this);
+			if (iter != dc_collector->pending_update_list.end())
+			{
+				dc_collector->pending_update_list.erase(iter);
+			}
+		}
+	}
+
+	void DCCollectorGoingAway() {
+			// The DCCollector object is being deleted.  We don't
+			// need it in order to finish the update.  We only keep
+			// a reference to it in order to do non-essential things.
+
+		dc_collector = NULL;
+	}
+
+	static void startUpdateCallback(bool success,Sock *sock,CondorError * /* errstack */,void *misc_data) {
+		UpdateData *ud = (UpdateData *)misc_data;
+
+			// We got here because a nonblocking call to startCommand()
+			// has called us back.  Now we will finish sending the update.
+
+			// NOTE: it is possible that by the time we get here,
+			// dc_collector has been deleted.  If that is the case,
+			// dc_collector will be NULL.  We will go ahead and finish
+			// the update anyway, but we will not do anything that
+			// modifies dc_collector (such as saving the TCP sock for
+			// future use).
+
+		DCCollector *dc_collector = ud->dc_collector;
+		if(!success) {
+			char const *who = "unknown";
+			if(sock) who = sock->get_sinful_peer();
+			dprintf(D_ALWAYS,"Failed to start non-blocking update to %s.\n",who);
+		}
+		else if(sock && !DCCollector::finishUpdate(ud->dc_collector,sock,ud->ad1,ud->ad2)) {
+			char const *who = "unknown";
+			if(sock) who = sock->get_sinful_peer();
+			dprintf(D_ALWAYS,"Failed to send non-blocking update to %s.\n",who);
+		}
+		else if(sock && sock->type() == Sock::reli_sock) {
+			// We keep the TCP socket around for sending more updates.
+			if(ud->dc_collector && ud->dc_collector->update_rsock == NULL) {
+				ud->dc_collector->update_rsock = (ReliSock *)sock;
+				sock = NULL;
+			}
+		}
+		if(sock) {
+			delete sock;
+		}
+		delete ud;
+
+			// Now that we finished sending the update, we can start sequentially sending
+			// the pending updates.  We send these updates synchronously in sequence
+			// because if we did it all asynchronously, we may end up with many TCP
+			// connections to the collector.  Instead we send the updates one at a time
+			// via a single connection.
+
+		if (dc_collector && dc_collector->pending_update_list.size())
+		{
+
+			// Here we handle pending updates by sending them over a stashed
+			// TCP socket to the collector.
+			//
+			while (dc_collector->update_rsock && dc_collector->pending_update_list.size())
+			{
+				UpdateData *ud = dc_collector->pending_update_list.front();
+				dc_collector->update_rsock->encode();
+					// NOTE: If there's a valid TCP socket available, we always
+					// push our updates over that (even if the update requested UDP).
+					// I don't think mixing TCP/UDP to the same collector is supported, so
+					// I believe this shortcut acceptable.
+				if (!dc_collector->update_rsock->put( ud->cmd ) ||
+					!DCCollector::finishUpdate(ud->dc_collector,dc_collector->update_rsock,ud->ad1,ud->ad2))
+				{
+					char const *who = "unknown";
+					if(dc_collector->update_rsock) {
+						who = dc_collector->update_rsock->get_sinful_peer();
+					}
+					dprintf(D_ALWAYS,"Failed to send update to %s.\n",who);
+					delete dc_collector->update_rsock;
+					dc_collector->update_rsock = NULL;
+					// Notice we remove the element from the list of pending updates
+					// even on failure.
+				}
+				delete ud;
+			}
+
+			// Here we handle pending updates in the event that we do not have
+			// a stashed TCP socket to the collector.  This could occur if
+			// our TCP socket to the collector was closed for some reason
+			// (e.g. the collector was restarted), or it may occur in the
+			// case of UDP.  Note that we just start handling the next pending
+			// update here, then go back to daemonCore with a callback registered
+			// to ensure we do not block in the event we need to re-establish
+			// a new TCP socket.
+			if (dc_collector->pending_update_list.size())
+			{
+				UpdateData *ud = dc_collector->pending_update_list.front();
+				dc_collector->startCommand_nonblocking(ud->cmd, ud->sock_type, 20, NULL, UpdateData::startUpdateCallback, ud );
+			}
+		}
+	}
+};
+
+bool
+DCCollector::sendUDPUpdate( int cmd, ClassAd* ad1, ClassAd* ad2, bool nonblocking )
+{
+		// with UDP it's pretty straight forward.  We always want to
+		// use Daemon::startCommand() so we get all the security stuff
+		// in every update.  In fact, we want to recreate the SafeSock
+		// itself each time, since it doesn't seem to work if we reuse
+		// the SafeSock object from one update to the next...
+
+	dprintf( D_FULLDEBUG,
+			 "Attempting to send update via UDP to collector %s\n",
+			 update_destination );
+
+	bool raw_protocol = false;
+	if( cmd == UPDATE_COLLECTOR_AD || cmd == INVALIDATE_COLLECTOR_ADS ) {
+			// we *never* want to do security negotiation with the
+			// developer collector.
+		raw_protocol = true;
+	}
+
+	if(nonblocking) {
+		UpdateData *ud = new UpdateData(cmd, Sock::safe_sock, ad1, ad2, this);
+		if (this->pending_update_list.size() == 1)
+		{
+			startCommand_nonblocking(cmd, Sock::safe_sock, 20, NULL, UpdateData::startUpdateCallback, ud, NULL, raw_protocol );
+		}
+		return true;
+	}
+
+	Sock *ssock = startCommand(cmd, Sock::safe_sock, 20, NULL, NULL, raw_protocol);
+	if(!ssock) {
+		newError( CA_COMMUNICATION_ERROR,
+				  "Failed to send UDP update command to collector" );
+		return false;
+	}
+
+	bool success = finishUpdate( this, ssock, ad1, ad2 );
+	delete ssock;
+
+	return success;
+}
+
+
+bool
+DCCollector::sendTCPUpdate( int cmd, ClassAd* ad1, ClassAd* ad2, bool nonblocking )
+{
+	dprintf( D_FULLDEBUG,
+			 "Attempting to send update via TCP to collector %s\n",
+			 update_destination );
+
+	if( ! update_rsock ) {
+			// we don't have a TCP sock for sending an update.  we've
+			// got to create one.  this is a somewhat complicated
+			// process, since we've got to create a ReliSock, connect
+			// to the collector, and start a security session.
+			// unfortunately, the only way to start a security session
+			// is to send an initial command, so we'll handle that
+			// update at the same time.  if the security API changes
+			// in the future, we'll be able to make this code a little
+			// more straight-forward...
+		return initiateTCPUpdate( cmd, ad1, ad2, nonblocking );
+	}
+
+		// otherwise, we've already got our socket, it's connected,
+		// the security session is going, etc.  so, all we have to do
+		// is send the actual update to the existing socket.  the only
+		// thing we have to watch out for is if the collector
+		// invalidated our cached socket, and if so, we'll have to
+		// start another connection.
+		// since finishUpdate() assumes we've already sent the command
+		// int, and since we do *NOT* want to use startCommand() again
+		// on a cached TCP socket, just code the int ourselves...
+	update_rsock->encode();
+	if (update_rsock->put(cmd) && finishUpdate(this, update_rsock, ad1, ad2)) {
+		return true;
+	}
+	dprintf( D_FULLDEBUG, 
+			 "Couldn't reuse TCP socket to update collector, "
+			 "starting new connection\n" );
+	delete update_rsock;
+	update_rsock = NULL;
+	return initiateTCPUpdate( cmd, ad1, ad2, nonblocking );
+}
+
+
+
+bool
+DCCollector::initiateTCPUpdate( int cmd, ClassAd* ad1, ClassAd* ad2, bool nonblocking )
+{
+	if( update_rsock ) {
+		delete update_rsock;
+		update_rsock = NULL;
+	}
+	if(nonblocking) {
+		UpdateData *ud = new UpdateData(cmd, Sock::reli_sock, ad1, ad2, this);
+			// Note that UpdateData automatically adds itself to the pending_update_list.
+		if (this->pending_update_list.size() == 1)
+		{
+			startCommand_nonblocking(cmd, Sock::reli_sock, 20, NULL, UpdateData::startUpdateCallback, ud );
+		}
+		return true;
+	}
+	Sock *sock = startCommand(cmd, Sock::reli_sock, 20);
+	if(!sock) {
+		newError( CA_COMMUNICATION_ERROR,
+				  "Failed to send TCP update command to collector" );
+		dprintf(D_ALWAYS,"Failed to send update to %s.\n",idStr());
+		return false;
+	}
+	update_rsock = (ReliSock *)sock;
+	return finishUpdate( this, update_rsock, ad1, ad2 );
+}
+
+
+void
+DCCollector::displayResults( void )
+{
+	dprintf( D_FULLDEBUG, "Will use %s to update collector %s\n", 
+			 use_tcp ? "TCP" : "UDP", updateDestination() );
+}
+
+
+// Figure out how we're going to identify the destination for our
+// updates when printing to the logs, etc. 
+const char*
+DCCollector::updateDestination( void )
+{
+	return update_destination;
+}
+
+
+void
+DCCollector::initDestinationStrings( void )
+{
+	if( update_destination ) {
+		delete [] update_destination;
+		update_destination = NULL;
+	}
+
+	std::string dest;
+
+		// Updates will always be sent to whatever info we've got
+		// in the Daemon object.  So, there's nothing hard to do for
+		// this... just see what useful info we have and use it. 
+	if( _full_hostname ) {
+		dest = _full_hostname;
+		if ( _addr) {
+			dest += ' ';
+			dest += _addr;
+		}
+	} else {
+		if (_addr) dest = _addr;
+	}
+	update_destination = strnewp( dest.c_str() );
+}
+
+
+//
+// Ad Sequence Number class methods
+//
+
+// Get a sequence number class for this classad, creating it if needed.
+DCCollectorAdSeq* DCCollectorAdSequences::getAdSeq(const ClassAd & ad)
+{
+	std::string name, attr;
+	ad.LookupString( ATTR_NAME, name );
+	ad.LookupString( ATTR_MY_TYPE, attr );
+	name += "\n"; name += attr;
+	ad.LookupString( ATTR_MACHINE, attr );
+	name += "\n"; name += attr;
+
+	DCCollectorAdSeqMap::iterator it = seqs.find(name);
+	if (it != seqs.end()) {
+		return &(it->second);
+	}
+	return &(seqs[name]);
+}
+
+DCCollector::~DCCollector( void )
+{
+	if( update_rsock ) {
+		delete( update_rsock );
+	}
+	if( update_destination ) {
+		delete [] update_destination;
+	}
+
+		// In case there are any nonblocking updates in progress,
+		// let them know this DCCollector object is going away.
+	for (std::deque<UpdateData*>::const_iterator it = pending_update_list.begin();
+			it != pending_update_list.end();
+			it++) {
+		if (*it) {
+			(*it)->DCCollectorGoingAway();
+		}
+	}
+}
+
+Timeslice &DCCollector::getBlacklistTimeslice()
+{
+	std::map< std::string, Timeslice >::iterator itr;
+	itr = blacklist.find(addr());
+	if( itr == blacklist.end() ) {
+		Timeslice ts;
+		
+			// Blacklist this collector if last failed contact took more
+			// than 1% of the time that has passed since that operation
+			// started.  (i.e. if contact fails quickly, don't worry, but
+			// if it takes a long time to fail, be cautious.
+		ts.setTimeslice(0.01);
+			// Set an upper bound of one hour for the collector to be blacklisted.
+		int avoid_time = param_integer("DEAD_COLLECTOR_MAX_AVOIDANCE_TIME",3600);
+		ts.setMaxInterval(avoid_time);
+		ts.setInitialInterval(0);
+
+		itr = blacklist.insert( std::map< std::string, Timeslice >::value_type(addr(),ts) ).first;
+	}
+	return itr->second;
+}
+
+bool
+DCCollector::isBlacklisted() {
+	Timeslice &blacklisted = getBlacklistTimeslice();
+	return !blacklisted.isTimeToRun();
+}
+
+void
+DCCollector::blacklistMonitorQueryStarted() {
+	m_blacklist_monitor_query_started.getTime();
+}
+
+void
+DCCollector::blacklistMonitorQueryFinished( bool success ) {
+	Timeslice &blacklisted = getBlacklistTimeslice();
+	if( success ) {
+		blacklisted.reset();
+	}
+	else {
+		UtcTime finished;
+		finished.getTime();
+		blacklisted.processEvent(m_blacklist_monitor_query_started,finished);
+
+		unsigned int delta = blacklisted.getTimeToNextRun();
+		if( delta > 0 ) {
+			dprintf( D_ALWAYS, "Will avoid querying collector %s %s for %us "
+			         "if an alternative succeeds.\n",
+			         name(),
+					 addr(),
+			         delta );
+		}
+	}
+}

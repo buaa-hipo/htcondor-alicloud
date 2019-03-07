@@ -1,0 +1,3 @@
+/etc/condor/condor_config
+/etc/init.d/condor
+/etc/default/condor

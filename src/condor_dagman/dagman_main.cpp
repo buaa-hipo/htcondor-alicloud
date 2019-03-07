@@ -1,0 +1,1739 @@
+/***************************************************************
+ *
+ * Copyright (C) 1990-2007, Condor Team, Computer Sciences Department,
+ * University of Wisconsin-Madison, WI.
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License"); you
+ * may not use this file except in compliance with the License.  You may
+ * obtain a copy of the License at
+ * 
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ ***************************************************************/
+
+
+#include "condor_common.h"
+#include "condor_config.h"
+#include "condor_daemon_core.h"
+#include "condor_string.h"
+#include "subsystem_info.h"
+#include "basename.h"
+#include "setenv.h"
+#include "dag.h"
+#include "debug.h"
+#include "parse.h"
+#include "my_username.h"
+#include "condor_environ.h"
+#include "dagman_main.h"
+#include "dagman_commands.h"
+#include "dagman_multi_dag.h"
+#include "util.h"
+#include "condor_getcwd.h"
+#include "condor_version.h"
+#include "subsystem_info.h"
+#include "dagman_metrics.h"
+
+void ExitSuccess();
+
+	// From condor_utils/condor_config.C
+	// Note: these functions are declared 'extern "C"' where they're
+	// implemented; if we don't do that here we get a link failure
+	// (I think because of the name mangling).  wenger 2007-02-09.
+//extern "C" void process_config_source( char* file, const char* name,
+//			char* host, int required );
+extern "C" bool is_piped_command(const char* filename);
+
+static char* lockFileName = NULL;
+
+static Dagman dagman;
+
+strict_level_t Dagman::_strict = DAG_STRICT_1;
+
+//---------------------------------------------------------------------------
+static void Usage() {
+    debug_printf( DEBUG_SILENT, "\nUsage: condor_dagman -f -t -l .\n"
+            "\t\t-Lockfile <NAME.dag.lock>\n"
+            "\t\t-Dag <NAME.dag>\n"
+            "\t\t-CsdVersion <version string>\n"
+            "\t\t[-Help]\n"
+            "\t\t[-Version]\n"
+	    "\t\t[-Debug <level>]\n"
+            "\t\t[-MaxIdle <int N>]\n"
+            "\t\t[-MaxJobs <int N>]\n"
+            "\t\t[-MaxPre <int N>]\n"
+            "\t\t[-MaxPost <int N>]\n"
+            "\t\t(obsolete) [-NoEventChecks]\n"
+            "\t\t(obsolete) [-AllowLogError]\n"
+            "\t\t[-DontAlwaysRunPost]\n"
+            "\t\t[-AlwaysRunPost]\n"
+            "\t\t[-WaitForDebug]\n"
+            "\t\t[-UseDagDir]\n"
+            "\t\t[-AutoRescue <0|1>]\n"
+            "\t\t[-DoRescueFrom <int N>]\n"
+			"\t\t[-AllowVersionMismatch]\n"
+			"\t\t[-DumpRescue]\n"
+			"\t\t[-Verbose]\n"
+			"\t\t[-Force]\n"
+			"\t\t[-Notification <never|always|complete|error>]\n"
+			"\t\t[-Suppress_notification]\n"
+			"\t\t[-Dont_Suppress_notification]\n"
+			"\t\t[-Dagman <dagman_executable>]\n"
+			"\t\t[-Outfile_dir <directory>]\n"
+			"\t\t[-Update_submit]\n"
+			"\t\t[-Import_env]\n"
+            "\t\t[-Priority <int N>]\n"
+			"\t\t[-dont_use_default_node_log] (no longer allowed)\n"
+			"\t\t[-DoRecov]\n"
+            "\twhere NAME is the name of your DAG.\n"
+            "\tdefault -Debug is -Debug %d\n", DEBUG_VERBOSE );
+	DC_Exit( EXIT_ERROR );
+}
+
+//---------------------------------------------------------------------------
+
+#define MAX_IDLE_DEFAULT 1000
+#define MAX_SUBMITS_PER_INT_DEFAULT 5
+#define LOG_SCAN_INT_DEFAULT 5
+
+Dagman::Dagman() :
+	dag (NULL),
+	maxIdle (MAX_IDLE_DEFAULT),
+	maxJobs (0),
+	maxPreScripts (20),
+	maxPostScripts (20),
+	paused (false),
+	condorSubmitExe (NULL),
+	condorRmExe (NULL),
+	submit_delay (0),
+	max_submit_attempts (6),
+	max_submits_per_interval (MAX_SUBMITS_PER_INT_DEFAULT), // so Coverity is happy
+	m_user_log_scan_interval (LOG_SCAN_INT_DEFAULT),
+	primaryDagFile (""),
+	multiDags (false),
+	startup_cycle_detect (false), // so Coverity is happy
+	useDagDir (false),
+	allow_events (CheckEvents::ALLOW_NONE), // so Coverity is happy
+	retrySubmitFirst (true), // so Coverity is happy
+	retryNodeFirst (false), // so Coverity is happy
+	mungeNodeNames (true), // so Coverity is happy
+	prohibitMultiJobs (false), // so Coverity is happy
+	abortDuplicates (true), // so Coverity is happy
+	submitDepthFirst (false), // so Coverity is happy
+	abortOnScarySubmit (true), // so Coverity is happy
+	pendingReportInterval (10 * 60), // 10 minutes
+	_dagmanConfigFile (NULL), // so Coverity is happy
+	autoRescue(true),
+	doRescueFrom(0),
+	maxRescueDagNum(MAX_RESCUE_DAG_DEFAULT),
+	rescueFileToRun(""),
+	dumpRescueDag(false),
+	_writePartialRescueDag(true),
+	_defaultNodeLog(""),
+	_generateSubdagSubmits(true),
+	_maxJobHolds(100),
+	_runPost(false),
+	_priority(0), // from config or command line
+	_claim_hold_time(20),
+	_doRecovery(false),
+	_suppressJobLogs(false),
+	_batchName(""),
+	_dagmanClassad(NULL),
+	_removeNodeJobs(true)
+{
+    debug_level = DEBUG_VERBOSE;  // Default debug level is verbose output
+}
+
+Dagman::~Dagman()
+{
+	CleanUp();
+}
+
+	// 
+	// In Config() we get DAGMan-related configuration values.  This
+	// is a three-step process:
+	// 1. Get the name of the DAGMan-specific config file (if any).
+	// 2. If there is a DAGMan-specific config file, process it so
+	//    that its values are added to the configuration.
+	// 3. Get the values we want from the configuration.
+	//
+bool
+Dagman::Config()
+{
+	int debug_cache_size = (1024*1024)*5; // 5 MB
+	bool debug_cache_enabled = false;
+
+		// Note: debug_printfs are DEBUG_NORMAL here because when we
+		// get here we haven't processed command-line arguments yet.
+
+		// Get and process the DAGMan-specific config file (if any)
+		// before getting any of the other parameters.
+	_dagmanConfigFile = param( "DAGMAN_CONFIG_FILE" );
+	if ( _dagmanConfigFile ) {
+		debug_printf( DEBUG_NORMAL, "Using DAGMan config file: %s\n",
+					_dagmanConfigFile );
+			// We do this test here because the corresponding error
+			// message from the config code doesn't show up in dagman.out.
+		if ( access( _dagmanConfigFile, R_OK ) != 0 &&
+					!is_piped_command( _dagmanConfigFile ) ) {
+			debug_printf( DEBUG_QUIET,
+						"ERROR: Can't read DAGMan config file: %s\n",
+						_dagmanConfigFile );
+    		DC_Exit( EXIT_ERROR );
+		}
+		process_config_source( _dagmanConfigFile, 0, "DAGMan config",
+					NULL, true );
+	}
+
+	_strict = (strict_level_t)param_integer( "DAGMAN_USE_STRICT",
+				_strict, DAG_STRICT_0, DAG_STRICT_3 );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_USE_STRICT setting: %d\n",
+				_strict );
+
+	debug_level = (debug_level_t)param_integer( "DAGMAN_VERBOSITY",
+				debug_level, DEBUG_SILENT, DEBUG_DEBUG_4 );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_VERBOSITY setting: %d\n",
+				debug_level );
+
+	debug_cache_size = 
+		param_integer( "DAGMAN_DEBUG_CACHE_SIZE", debug_cache_size,
+		0, INT_MAX);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEBUG_CACHE_SIZE setting: %d\n",
+				debug_cache_size );
+
+	debug_cache_enabled = 
+		param_boolean( "DAGMAN_DEBUG_CACHE_ENABLE", debug_cache_enabled );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEBUG_CACHE_ENABLE setting: %s\n",
+				debug_cache_enabled?"True":"False" );
+
+	submit_delay = param_integer( "DAGMAN_SUBMIT_DELAY", submit_delay, 0);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_SUBMIT_DELAY setting: %d\n",
+				submit_delay );
+
+	max_submit_attempts =
+		param_integer( "DAGMAN_MAX_SUBMIT_ATTEMPTS", max_submit_attempts,
+		1, 16 );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_SUBMIT_ATTEMPTS setting: %d\n",
+				max_submit_attempts );
+
+	startup_cycle_detect =
+		param_boolean( "DAGMAN_STARTUP_CYCLE_DETECT", startup_cycle_detect );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_STARTUP_CYCLE_DETECT setting: %s\n",
+				startup_cycle_detect ? "True" : "False" );
+
+	max_submits_per_interval =
+		param_integer( "DAGMAN_MAX_SUBMITS_PER_INTERVAL",
+		max_submits_per_interval, 1, 1000 );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_SUBMITS_PER_INTERVAL setting: %d\n",
+				max_submits_per_interval );
+
+	m_user_log_scan_interval =
+		param_integer( "DAGMAN_USER_LOG_SCAN_INTERVAL",
+		m_user_log_scan_interval, 1, INT_MAX);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_USER_LOG_SCAN_INTERVAL setting: %d\n",
+				m_user_log_scan_interval );
+
+	_priority = param_integer( "DAGMAN_DEFAULT_PRIORITY",
+				_priority, INT_MIN, INT_MAX, false );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEFAULT_PRIORITY setting: %d\n",
+				_priority );
+
+	if ( !param_boolean( "DAGMAN_ALWAYS_USE_NODE_LOG", true ) ) {
+       	debug_printf( DEBUG_QUIET,
+					"Error: setting DAGMAN_ALWAYS_USE_NODE_LOG to false is no longer allowed\n" );
+		DC_Exit( EXIT_ERROR );
+	}
+
+	_submitDagDeepOpts.suppress_notification = param_boolean(
+		"DAGMAN_SUPPRESS_NOTIFICATION",
+		_submitDagDeepOpts.suppress_notification);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_SUPPRESS_NOTIFICATION setting: %s\n",
+		_submitDagDeepOpts.suppress_notification ? "True" : "False" );
+
+		// Event checking setup...
+
+		// We want to default to allowing the terminated/aborted
+		// combination (that's what we've defaulted to in the past).
+		// Okay, we also want to allow execute before submit because
+		// we've run into that, and since DAGMan doesn't really care
+		// about the execute events, it shouldn't abort the DAG.
+		// And we further want to allow two terminated events for a
+		// single job because people are seeing that with Globus
+		// jobs!!
+	allow_events = CheckEvents::ALLOW_TERM_ABORT |
+			CheckEvents::ALLOW_EXEC_BEFORE_SUBMIT |
+			CheckEvents::ALLOW_DOUBLE_TERMINATE |
+			CheckEvents::ALLOW_DUPLICATE_EVENTS;
+
+		// If the old DAGMAN_IGNORE_DUPLICATE_JOB_EXECUTION param is set,
+		// we also allow extra runs.
+		// Note: this parameter is probably only used by CDF, and only
+		// really needed until they update all their systems to 6.7.3
+		// or later (not 6.7.3 pre-release), which fixes the "double-run"
+		// bug.
+	bool allowExtraRuns = param_boolean(
+			"DAGMAN_IGNORE_DUPLICATE_JOB_EXECUTION", false );
+
+	if ( allowExtraRuns ) {
+		allow_events |= CheckEvents::ALLOW_RUN_AFTER_TERM;
+		debug_printf( DEBUG_NORMAL, "Warning: "
+				"DAGMAN_IGNORE_DUPLICATE_JOB_EXECUTION "
+				"is deprecated -- used DAGMAN_ALLOW_EVENTS instead\n" );
+		check_warning_strictness( DAG_STRICT_2 );
+	}
+
+		// Now get the new DAGMAN_ALLOW_EVENTS value -- that can override
+		// all of the previous stuff.
+	allow_events = param_integer("DAGMAN_ALLOW_EVENTS", allow_events);
+	debug_printf( DEBUG_NORMAL, "allow_events ("
+				"DAGMAN_ALLOW_EVENTS"
+				") setting: %d\n", allow_events );
+
+		// ...end of event checking setup.
+
+	retrySubmitFirst = param_boolean( "DAGMAN_RETRY_SUBMIT_FIRST",
+				retrySubmitFirst );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_RETRY_SUBMIT_FIRST setting: %s\n",
+				retrySubmitFirst ? "True" : "False" );
+
+	retryNodeFirst = param_boolean( "DAGMAN_RETRY_NODE_FIRST",
+				retryNodeFirst );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_RETRY_NODE_FIRST setting: %s\n",
+				retryNodeFirst ? "True" : "False" );
+
+	maxIdle =
+		param_integer( "DAGMAN_MAX_JOBS_IDLE", maxIdle, 0, INT_MAX );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_JOBS_IDLE setting: %d\n",
+				maxIdle );
+
+	maxJobs =
+		param_integer( "DAGMAN_MAX_JOBS_SUBMITTED", maxJobs, 0, INT_MAX );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_JOBS_SUBMITTED setting: %d\n",
+				maxJobs );
+
+	maxPreScripts = param_integer( "DAGMAN_MAX_PRE_SCRIPTS", maxPreScripts,
+				0, INT_MAX );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_PRE_SCRIPTS setting: %d\n",
+				maxPreScripts );
+
+	maxPostScripts = param_integer( "DAGMAN_MAX_POST_SCRIPTS", maxPostScripts,
+				0, INT_MAX );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_POST_SCRIPTS setting: %d\n",
+				maxPostScripts );
+
+	bool allowLogError = param_boolean( "DAGMAN_ALLOW_LOG_ERROR", false );
+	if ( allowLogError ) {
+		debug_printf( DEBUG_NORMAL, "Warning: DAGMAN_ALLOW_LOG_ERROR is "
+					"no longer supported\n" );
+		check_warning_strictness( DAG_STRICT_2 );
+	}
+
+	mungeNodeNames = param_boolean( "DAGMAN_MUNGE_NODE_NAMES",
+				mungeNodeNames );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MUNGE_NODE_NAMES setting: %s\n",
+				mungeNodeNames ? "True" : "False" );
+
+	prohibitMultiJobs = param_boolean( "DAGMAN_PROHIBIT_MULTI_JOBS",
+				prohibitMultiJobs );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_PROHIBIT_MULTI_JOBS setting: %s\n",
+				prohibitMultiJobs ? "True" : "False" );
+
+	submitDepthFirst = param_boolean( "DAGMAN_SUBMIT_DEPTH_FIRST",
+				submitDepthFirst );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_SUBMIT_DEPTH_FIRST setting: %s\n",
+				submitDepthFirst ? "True" : "False" );
+
+	_runPost = param_boolean( "DAGMAN_ALWAYS_RUN_POST", _runPost );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_ALWAYS_RUN_POST setting: %s\n",
+			_runPost ? "True" : "False" );
+
+	free( condorSubmitExe );
+	condorSubmitExe = param( "DAGMAN_CONDOR_SUBMIT_EXE" );
+	if( !condorSubmitExe ) {
+		condorSubmitExe = strdup( "condor_submit" );
+		ASSERT( condorSubmitExe );
+	}
+
+	free( condorRmExe );
+	condorRmExe = param( "DAGMAN_CONDOR_RM_EXE" );
+	if( !condorRmExe ) {
+		condorRmExe = strdup( "condor_rm" );
+		ASSERT( condorRmExe );
+	}
+
+	if ( param_boolean( "DAGMAN_STORK_SUBMIT_EXE", false ) ) {
+		debug_printf( DEBUG_NORMAL, "Warning: DAGMAN_STORK_SUBMIT_EXE is "
+					"no longer supported\n" );
+		check_warning_strictness( DAG_STRICT_1 );
+	}
+
+	if ( param_boolean( "DAGMAN_STORK_RM_EXE", false ) ) {
+		debug_printf( DEBUG_NORMAL, "Warning: DAGMAN_STORK_RM_EXE is "
+					"no longer supported\n" );
+		check_warning_strictness( DAG_STRICT_1 );
+	}
+
+	abortDuplicates = param_boolean( "DAGMAN_ABORT_DUPLICATES",
+				abortDuplicates );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_ABORT_DUPLICATES setting: %s\n",
+				abortDuplicates ? "True" : "False" );
+
+	abortOnScarySubmit = param_boolean( "DAGMAN_ABORT_ON_SCARY_SUBMIT",
+				abortOnScarySubmit );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_ABORT_ON_SCARY_SUBMIT setting: %s\n",
+				abortOnScarySubmit ? "True" : "False" );
+
+	pendingReportInterval = param_integer( "DAGMAN_PENDING_REPORT_INTERVAL",
+				pendingReportInterval );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_PENDING_REPORT_INTERVAL setting: %d\n",
+				pendingReportInterval );
+
+	if ( param_boolean( "DAGMAN_OLD_RESCUE", false ) ) {
+		debug_printf( DEBUG_NORMAL, "Warning: DAGMAN_OLD_RESCUE is "
+					"no longer supported\n" );
+		check_warning_strictness( DAG_STRICT_1 );
+	}
+
+	autoRescue = param_boolean( "DAGMAN_AUTO_RESCUE", autoRescue );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_AUTO_RESCUE setting: %s\n",
+				autoRescue ? "True" : "False" );
+	
+	maxRescueDagNum = param_integer( "DAGMAN_MAX_RESCUE_NUM",
+				maxRescueDagNum, 0, ABS_MAX_RESCUE_DAG_NUM );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_RESCUE_NUM setting: %d\n",
+				maxRescueDagNum );
+
+	_writePartialRescueDag = param_boolean( "DAGMAN_WRITE_PARTIAL_RESCUE",
+				_writePartialRescueDag );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_WRITE_PARTIAL_RESCUE setting: %s\n",
+				_writePartialRescueDag ? "True" : "False" );
+
+	param( _defaultNodeLog, "DAGMAN_DEFAULT_NODE_LOG" );
+	if ( _defaultNodeLog == "" ) {
+		_defaultNodeLog = "@(DAG_DIR)/@(DAG_FILE).nodes.log";
+	}
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEFAULT_NODE_LOG setting: %s\n",
+				_defaultNodeLog.Value() );
+
+	_generateSubdagSubmits = 
+		param_boolean( "DAGMAN_GENERATE_SUBDAG_SUBMITS",
+		_generateSubdagSubmits );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_GENERATE_SUBDAG_SUBMITS setting: %s\n",
+				_generateSubdagSubmits ? "True" : "False" );
+
+	_maxJobHolds = param_integer( "DAGMAN_MAX_JOB_HOLDS", _maxJobHolds,
+				0, 1000000 );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_MAX_JOB_HOLDS setting: %d\n",
+				_maxJobHolds );
+
+	_claim_hold_time = param_integer( "DAGMAN_HOLD_CLAIM_TIME",
+				_claim_hold_time, 0, 3600);
+	debug_printf( DEBUG_NORMAL, "DAGMAN_HOLD_CLAIM_TIME setting: %d\n",
+				_claim_hold_time );
+
+	char *debugSetting = param( "ALL_DEBUG" );
+	debug_printf( DEBUG_NORMAL, "ALL_DEBUG setting: %s\n",
+				debugSetting ? debugSetting : "" );
+	if ( debugSetting ) {
+		free( debugSetting );
+	}
+
+	debugSetting = param( "DAGMAN_DEBUG" );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_DEBUG setting: %s\n",
+				debugSetting ? debugSetting : "" );
+	if ( debugSetting ) {
+		free( debugSetting );
+	}
+
+	_suppressJobLogs = 
+				param_boolean( "DAGMAN_SUPPRESS_JOB_LOGS",
+				_suppressJobLogs );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_SUPPRESS_JOB_LOGS setting: %s\n",
+				_suppressJobLogs ? "True" : "False" );
+
+	_removeNodeJobs = param_boolean( "DAGMAN_REMOVE_NODE_JOBS",
+				_removeNodeJobs );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_REMOVE_NODE_JOBS setting: %s\n",
+				_removeNodeJobs ? "True" : "False" );
+
+	// enable up the debug cache if needed
+	if (debug_cache_enabled) {
+		debug_cache_set_size(debug_cache_size);
+		debug_cache_enable();
+	}
+
+	return true;
+}
+
+
+// NOTE: this is only called on reconfig, not at startup
+void
+main_config()
+{
+		// This is commented out because, even if we get new config
+		// values here, they don't get passed to the Dag object (which
+		// is where most of them actually take effect).  (See Gnats
+		// PR 808.)  wenger 2007-02-09
+	// dagman.Config();
+}
+
+// this is called by DC when the schedd is shutdown fast
+void
+main_shutdown_fast()
+{
+	dagman.dag->GetJobstateLog().WriteDagmanFinished( EXIT_RESTART );
+	// Don't report metrics here because we should restart.
+    DC_Exit( EXIT_RESTART );
+}
+
+// this can be called by other functions, or by DC when the schedd is
+// shutdown gracefully; this also gets called if condor_hold is done
+// on the DAGMan job
+void main_shutdown_graceful() {
+	print_status();
+	dagman.dag->DumpNodeStatus( true, false );
+	dagman.dag->GetJobstateLog().WriteDagmanFinished( EXIT_RESTART );
+	// Don't report metrics here because we should restart.
+	dagman.CleanUp();
+	DC_Exit( EXIT_RESTART );
+}
+
+void main_shutdown_rescue( int exitVal, Dag::dag_status dagStatus,
+			bool removeCondorJobs ) {
+		// Avoid possible infinite recursion if you hit a fatal error
+		// while writing a rescue DAG.
+	static bool inShutdownRescue = false;
+	if ( inShutdownRescue ) {
+		return;
+	}
+	inShutdownRescue = true;
+
+		// If is here in case we get an error during parsing...
+	if ( dagman.dag ) dagman.dag->_dagStatus = dagStatus;
+	debug_printf( DEBUG_QUIET, "Aborting DAG...\n" );
+		// Avoid writing two different rescue DAGs if the "main" DAG and
+		// the final node (if any) both fail.
+	static bool wroteRescue = false;
+	if( dagman.dag ) {
+			// We write the rescue DAG *before* removing jobs because
+			// otherwise if we crashed, failed, or were killed while
+			// removing them, we would leave the DAG in an
+			// unrecoverable state...
+		if( exitVal != 0 ) {
+			if ( dagman.maxRescueDagNum > 0 ) {
+				dagman.dag->Rescue( dagman.primaryDagFile.Value(),
+							dagman.multiDags, dagman.maxRescueDagNum,
+							wroteRescue, false,
+							dagman._writePartialRescueDag );
+				wroteRescue = true;
+			} else {
+				debug_printf( DEBUG_QUIET, "No rescue DAG written because "
+							"DAGMAN_MAX_RESCUE_NUM is 0\n" );
+			}
+		}
+
+		debug_printf( DEBUG_DEBUG_1, "We have %d running jobs to remove\n",
+					dagman.dag->NumJobsSubmitted() );
+			// We just go ahead and do a condor_rm here even if we don't
+			// think we have any jobs running, because if we're aborting
+			// because of DAGMAN_PROHIBIT_MULTI_JOBS getting triggered,
+			// we may have jobs in the queue even if we think we don't.
+			// (See gittrac #4960.) wenger 2015-04-22
+		debug_printf( DEBUG_NORMAL, "Removing submitted jobs...\n" );
+		dagman.dag->RemoveRunningJobs( dagman.DAGManJobId,
+					removeCondorJobs, false );
+		if ( dagman.dag->NumScriptsRunning() > 0 ) {
+			debug_printf( DEBUG_NORMAL, "Removing running scripts...\n" );
+			dagman.dag->RemoveRunningScripts();
+		}
+		dagman.dag->PrintDeferrals( DEBUG_NORMAL, true );
+
+			// Start the final node if we have one.
+		if ( dagman.dag->StartFinalNode() ) {
+				// We started a final node; return here so we wait for the
+				// final node to finish, instead of exiting immediately.
+			inShutdownRescue = false;
+			return;
+		}
+		print_status();
+		bool removed = ( dagStatus == Dag::DAG_STATUS_RM );
+		dagman.dag->DumpNodeStatus( false, removed );
+		dagman.dag->GetJobstateLog().WriteDagmanFinished( exitVal );
+	}
+	if (dagman.dag) dagman.dag->ReportMetrics( exitVal );
+	tolerant_unlink( lockFileName ); 
+	dagman.CleanUp();
+	inShutdownRescue = false;
+	DC_Exit( exitVal );
+}
+
+// this gets called by DC when DAGMan receives a SIGUSR1 -- which,
+// assuming the DAGMan submit file was properly written, is the signal
+// the schedd will send if the DAGMan job is removed from the queue
+int main_shutdown_remove(Service *, int) {
+    debug_printf( DEBUG_QUIET, "Received SIGUSR1\n" );
+	// We don't remove Condor node jobs here because the schedd will
+	// automatically remove them itself.
+	main_shutdown_rescue( EXIT_ABORT, Dag::DAG_STATUS_RM,
+				dagman._removeNodeJobs );
+	return FALSE;
+}
+
+void ExitSuccess() {
+	print_status();
+	dagman.dag->DumpNodeStatus( false, false );
+	dagman.dag->GetJobstateLog().WriteDagmanFinished( EXIT_OKAY );
+	dagman.dag->ReportMetrics( EXIT_OKAY );
+	tolerant_unlink( lockFileName ); 
+	dagman.CleanUp();
+	DC_Exit( EXIT_OKAY );
+}
+
+void condor_event_timer();
+
+/****** FOR TESTING *******
+int main_testing_stub( Service *, int ) {
+	if( dagman.paused ) {
+		ResumeDag(dagman);
+	}
+	else {
+		PauseDag(dagman);
+	}
+	return true;
+}
+****** FOR TESTING ********/
+
+//---------------------------------------------------------------------------
+void main_init (int argc, char ** const argv) {
+
+	printf ("Executing condor dagman ... \n");
+
+		// flag used if DAGMan is invoked with -WaitForDebug so we
+		// wait for a developer to attach with a debugger...
+	volatile int wait_for_debug = 0;
+
+		// process any config vars -- this happens before we process
+		// argv[], since arguments should override config settings
+	dagman.Config();
+
+	// The DCpermission (last parm) should probably be PARENT, if it existed
+    daemonCore->Register_Signal( SIGUSR1, "SIGUSR1",
+                                 (SignalHandler) main_shutdown_remove,
+                                 "main_shutdown_remove", NULL);
+
+/****** FOR TESTING *******
+    daemonCore->Register_Signal( SIGUSR2, "SIGUSR2",
+                                 (SignalHandler) main_testing_stub,
+                                 "main_testing_stub", NULL);
+****** FOR TESTING ********/
+    debug_progname = condor_basename(argv[0]);
+
+		// condor_submit_dag version from .condor.sub
+	bool allowVerMismatch = false;
+	const char *csdVersion = "undefined";
+
+	int i;
+    for (i = 0 ; i < argc ; i++) {
+        debug_printf( DEBUG_NORMAL, "argv[%d] == \"%s\"\n", i, argv[i] );
+    }
+
+    if (argc < 2) Usage();  //  Make sure an input file was specified
+
+	DagmanMetrics::SetStartTime();
+
+		// get dagman job id from environment, if it's there
+		// (otherwise it will be set to "-1.-1.-1")
+	dagman.DAGManJobId.SetFromString( getenv( EnvGetName( ENV_ID ) ) );
+
+	dagman._dagmanClassad = new DagmanClassad( dagman.DAGManJobId );
+
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+		// Minimum legal version for a .condor.sub file to be compatible
+		// with this condor_dagman binary.
+
+		// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+		// Be sure to change this if the arguments or environment
+		// passed to condor_dagman change in an incompatible way!!
+		// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+	struct DagVersionData {
+		int majorVer;
+		int minorVer;
+		int subMinorVer;
+	};
+	const DagVersionData MIN_SUBMIT_FILE_VERSION = { 7, 1, 2 };
+
+		// Construct a string of the minimum submit file version.
+	MyString minSubmitVersionStr;
+	minSubmitVersionStr.formatstr( "%d.%d.%d",
+				MIN_SUBMIT_FILE_VERSION.majorVer,
+				MIN_SUBMIT_FILE_VERSION.minorVer,
+				MIN_SUBMIT_FILE_VERSION.subMinorVer );
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    //
+    // Process command-line arguments
+    //
+	bool alwaysRunPostSet = false;
+
+    for (i = 1; i < argc; i++) {
+        if( !strcasecmp( "-Debug", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No debug level specified\n" );
+                Usage();
+            }
+            debug_level = (debug_level_t) atoi (argv[i]);
+        } else if( !strcasecmp( "-Lockfile", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No DagMan lockfile specified\n" );
+                Usage();
+            }
+            lockFileName = argv[i];
+        } else if( !strcasecmp( "-Help", argv[i] ) ) {
+            Usage();
+        } else if (!strcasecmp( "-Dag", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No DAG specified\n" );
+                Usage();
+            }
+			dagman.dagFiles.append( argv[i] );
+        } else if( !strcasecmp( "-MaxIdle", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT,
+							  "Integer missing after -MaxIdle\n" );
+                Usage();
+            }
+            dagman.maxIdle = atoi( argv[i] );
+        } else if( !strcasecmp( "-MaxJobs", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT,
+							  "Integer missing after -MaxJobs\n" );
+                Usage();
+            }
+            dagman.maxJobs = atoi( argv[i] );
+        } else if( !strcasecmp( "-MaxScripts", argv[i] ) ) {
+			debug_printf( DEBUG_SILENT, "-MaxScripts has been replaced with "
+						   "-MaxPre and -MaxPost arguments\n" );
+			Usage();
+        } else if( !strcasecmp( "-MaxPre", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT,
+							  "Integer missing after -MaxPre\n" );
+                Usage();
+            }
+            dagman.maxPreScripts = atoi( argv[i] );
+        } else if( !strcasecmp( "-MaxPost", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT,
+							  "Integer missing after -MaxPost\n" );
+                Usage();
+            }
+            dagman.maxPostScripts = atoi( argv[i] );
+
+        } else if( !strcasecmp( "-NoEventChecks", argv[i] ) ) {
+			debug_printf( DEBUG_QUIET, "Warning: -NoEventChecks is "
+						"ignored; please use the DAGMAN_ALLOW_EVENTS "
+						"config parameter instead\n");
+			check_warning_strictness( DAG_STRICT_2 );
+
+        } else if( !strcasecmp( "-AllowLogError", argv[i] ) ) {
+			debug_printf( DEBUG_QUIET, "Warning: -AllowLogError is "
+						"no longer supported\n" );
+			check_warning_strictness( DAG_STRICT_2 );
+
+        } else if( !strcasecmp( "-DontAlwaysRunPost", argv[i] ) ) {
+			if ( alwaysRunPostSet && dagman._runPost ) {
+				debug_printf( DEBUG_QUIET,
+							"ERROR: -DontAlwaysRunPost and -AlwaysRunPost are both set!\n" );
+				DC_Exit( EXIT_ERROR );
+			}
+			alwaysRunPostSet = true;
+			dagman._runPost = false;
+
+        } else if( !strcasecmp( "-AlwaysRunPost", argv[i] ) ) {
+			if ( alwaysRunPostSet && !dagman._runPost ) {
+				debug_printf( DEBUG_QUIET,
+							"ERROR: -DontAlwaysRunPost and -AlwaysRunPost are both set!\n" );
+				DC_Exit( EXIT_ERROR );
+			}
+			dagman._runPost = true;
+
+        } else if( !strcasecmp( "-WaitForDebug", argv[i] ) ) {
+			wait_for_debug = 1;
+
+        } else if( !strcasecmp( "-UseDagDir", argv[i] ) ) {
+			dagman.useDagDir = true;
+
+        } else if( !strcasecmp( "-AutoRescue", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No AutoRescue value specified\n" );
+                Usage();
+            }
+            dagman.autoRescue = (atoi( argv[i] ) != 0);
+
+        } else if( !strcasecmp( "-DoRescueFrom", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No rescue DAG number specified\n" );
+                Usage();
+            }
+            dagman.doRescueFrom = atoi (argv[i]);
+
+        } else if( !strcasecmp( "-CsdVersion", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No CsdVersion value specified\n" );
+                Usage();
+            }
+			csdVersion = argv[i];
+
+        } else if( !strcasecmp( "-AllowVersionMismatch", argv[i] ) ) {
+			allowVerMismatch = true;
+
+        } else if( !strcasecmp( "-DumpRescue", argv[i] ) ) {
+			dagman.dumpRescueDag = true;
+
+        } else if( !strcasecmp( "-verbose", argv[i] ) ) {
+			dagman._submitDagDeepOpts.bVerbose = true;
+
+        } else if( !strcasecmp( "-force", argv[i] ) ) {
+			dagman._submitDagDeepOpts.bForce = true;
+		
+        } else if( !strcasecmp( "-notification", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No notification value specified\n" );
+                Usage();
+            }
+			dagman._submitDagDeepOpts.strNotification = argv[i];
+
+		} else if( !strcasecmp( "-suppress_notification",argv[i] ) ) {
+			dagman._submitDagDeepOpts.suppress_notification = true;
+
+		} else if( !strcasecmp( "-dont_suppress_notification",argv[i] ) ) {
+			dagman._submitDagDeepOpts.suppress_notification = false;
+
+        } else if( !strcasecmp( "-dagman", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No dagman value specified\n" );
+                Usage();
+            }
+			dagman._submitDagDeepOpts.strDagmanPath = argv[i];
+
+        } else if( !strcasecmp( "-outfile_dir", argv[i] ) ) {
+            i++;
+            if( argc <= i || strcmp( argv[i], "" ) == 0 ) {
+                debug_printf( DEBUG_SILENT, "No outfile_dir value specified\n" );
+                Usage();
+            }
+			dagman._submitDagDeepOpts.strOutfileDir = argv[i];
+
+        } else if( !strcasecmp( "-update_submit", argv[i] ) ) {
+			dagman._submitDagDeepOpts.updateSubmit = true;
+
+        } else if( !strcasecmp( "-import_env", argv[i] ) ) {
+			dagman._submitDagDeepOpts.importEnv = true;
+
+        } else if( !strcasecmp( "-priority", argv[i] ) ) {
+			++i;
+			if( i >= argc || strcmp( argv[i], "" ) == 0 ) {
+				debug_printf( DEBUG_NORMAL, "No priority value specified\n");
+				Usage();
+			}
+			dagman._priority = atoi(argv[i]);
+
+		} else if( !strcasecmp( "-dont_use_default_node_log", argv[i] ) ) {
+       		debug_printf( DEBUG_QUIET,
+						"Error: -dont_use_default_node_log is no longer allowed\n" );
+			DC_Exit( EXIT_ERROR );
+
+		} else if ( !strcasecmp( "-dorecov", argv[i] ) ) {
+			dagman._doRecovery = true;
+
+        } else {
+    		debug_printf( DEBUG_SILENT, "\nUnrecognized argument: %s\n",
+						argv[i] );
+			Usage();
+		}
+    }
+
+	dagman.dagFiles.rewind();
+	dagman.primaryDagFile = dagman.dagFiles.next();
+	dagman.multiDags = (dagman.dagFiles.number() > 1);
+
+	dagman._dagmanClassad->GetSetBatchName( dagman.primaryDagFile,
+				dagman._batchName );
+
+	dagman._dagmanClassad->GetAcctInfo(
+				dagman._submitDagDeepOpts.acctGroup,
+				dagman._submitDagDeepOpts.acctGroupUser );
+
+	dagman.ResolveDefaultLog();
+
+    //
+    // Check the arguments...
+    //
+
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// Checking for version compatibility between the .condor.sub
+	// file and this condor_dagman binary...
+
+	// Note: if we're in recovery mode and the submit file version
+	// causes us to quit, we leave any existing node jobs still
+	// running -- may want to change that eventually.  wenger 2009-10-13.
+
+		// Version of the condor_submit_dag that created our submit file.
+	CondorVersionInfo submitFileVersion( csdVersion );
+
+		// Version of this condor_dagman binary.
+	CondorVersionInfo dagmanVersion;
+
+		// Just generate this message fragment in one place.
+	MyString versionMsg;
+	versionMsg.formatstr("the version (%s) of this DAG's HTCondor submit "
+				"file (created by condor_submit_dag)", csdVersion );
+
+		// Make sure version in submit file is valid.
+	if( !submitFileVersion.is_valid() ) {
+		if ( !allowVerMismatch ) {
+        	debug_printf( DEBUG_QUIET, "Error: %s is invalid!\n",
+						versionMsg.Value() );
+			DC_Exit( EXIT_ERROR );
+		} else {
+        	debug_printf( DEBUG_NORMAL, "Warning: %s is invalid; "
+						"continuing because of -AllowVersionMismatch flag\n",
+						versionMsg.Value() );
+		}
+
+		// Make sure .condor.sub file is recent enough.
+	} else if ( submitFileVersion.compare_versions(
+				CondorVersion() ) != 0 ) {
+
+		if( !submitFileVersion.built_since_version(
+					MIN_SUBMIT_FILE_VERSION.majorVer,
+					MIN_SUBMIT_FILE_VERSION.minorVer,
+					MIN_SUBMIT_FILE_VERSION.subMinorVer ) ) {
+			if ( !allowVerMismatch ) {
+        		debug_printf( DEBUG_QUIET, "Error: %s is older than "
+							"oldest permissible version (%s)\n",
+							versionMsg.Value(), minSubmitVersionStr.Value() );
+				DC_Exit( EXIT_ERROR );
+			} else {
+        		debug_printf( DEBUG_NORMAL, "Warning: %s is older than "
+							"oldest permissible version (%s); continuing "
+							"because of -AllowVersionMismatch flag\n",
+							versionMsg.Value(), minSubmitVersionStr.Value() );
+			}
+
+			// Warn if .condor.sub file is a newer version than this binary.
+		} else if (dagmanVersion.compare_versions( csdVersion ) > 0 ) {
+        	debug_printf( DEBUG_NORMAL, "Warning: %s is newer than "
+						"condor_dagman version (%s)\n", versionMsg.Value(),
+						CondorVersion() );
+			check_warning_strictness( DAG_STRICT_3 );
+		} else {
+        	debug_printf( DEBUG_NORMAL, "Note: %s differs from "
+						"condor_dagman version (%s), but the "
+						"difference is permissible\n", 
+						versionMsg.Value(), CondorVersion() );
+		}
+	}
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    if( dagman.primaryDagFile == "" ) {
+        debug_printf( DEBUG_SILENT, "No DAG file was specified\n" );
+        Usage();
+    }
+    if (lockFileName == NULL) {
+        debug_printf( DEBUG_SILENT, "No DAG lock file was specified\n" );
+        Usage();
+    }
+    if( dagman.maxJobs < 0 ) {
+        debug_printf( DEBUG_SILENT, "-MaxJobs must be non-negative\n");
+        Usage();
+    }
+    if( dagman.maxPreScripts < 0 ) {
+        debug_printf( DEBUG_SILENT, "-MaxPre must be non-negative\n" );
+        Usage();
+    }
+    if( dagman.maxPostScripts < 0 ) {
+        debug_printf( DEBUG_SILENT, "-MaxPost must be non-negative\n" );
+        Usage();
+    }
+    if( dagman.doRescueFrom < 0 ) {
+        debug_printf( DEBUG_SILENT, "-DoRescueFrom must be non-negative\n" );
+        Usage();
+    }
+
+		// This is kind of a guess at adjusting
+		// DAGMAN_MAX_SUBMITS_PER_INTERVAL and DAGMAN_USER_LOG_SCAN_INTERVAL
+		// so that they don't goof up DAGMAN_MAX_JOBS_IDLE too much...
+		// wenger 2015-11-05
+	if ( dagman.maxIdle != MAX_IDLE_DEFAULT ) {
+    	debug_printf( DEBUG_QUIET,
+					"Note:  DAGMAN_MAX_JOBS_IDLE has been changed from "
+					"the default setting; if your submit files create "
+					"multiple procs, you should probably set "
+					"DAGMAN_MAX_SUBMITS_PER_INTERVAL to 1\n" );
+
+		int submitsLimit = MAX( 1, dagman.maxIdle / 10 );
+		if ( dagman.max_submits_per_interval > submitsLimit ) {
+			if ( dagman.max_submits_per_interval ==
+						MAX_SUBMITS_PER_INT_DEFAULT ) {
+					// The user hasn't changed DAGMAN_MAX_SUBMITS_PER_INTERVAL,
+					// so change it to our best guess at something that will
+					// work with DAGMAN_MAX_JOBS_IDLE.
+				dagman.max_submits_per_interval = submitsLimit;
+    			debug_printf( DEBUG_QUIET,
+							"Note:  DAGMAN_MAX_SUBMITS_PER_INTERVAL has been "
+							"changed to %d because of your "
+							"DAGMAN_MAX_JOBS_IDLE setting of %d\n",
+							dagman.max_submits_per_interval, dagman.maxIdle );
+			} else {
+					// If the user has changed this from the default, leave
+					// their setting alone.
+				debug_printf( DEBUG_QUIET,
+							"Warning: your DAGMAN_MAX_SUBMITS_PER_INTERVAL "
+							"setting of %d may interfere with your "
+							"DAGMAN_MAX_JOBS_IDLE setting of %d\n",
+							dagman.max_submits_per_interval, dagman.maxIdle );
+				check_warning_strictness( DAG_STRICT_2 );
+			}
+		}
+
+		if ( dagman.m_user_log_scan_interval >
+					dagman.max_submits_per_interval ) {
+			if ( dagman.m_user_log_scan_interval == LOG_SCAN_INT_DEFAULT ) {
+					// The user hasn't changed DAGMAN_USER_LOG_SCAN_INTERVAL,
+					// so change it to our best guess at something that will
+					// work with DAGMAN_MAX_SUBMITS_PER_INTERVAL.
+				dagman.m_user_log_scan_interval =
+							dagman.max_submits_per_interval;
+    			debug_printf( DEBUG_QUIET,
+							"Note:  DAGMAN_USER_LOG_SCAN_INTERVAL has been "
+							"changed to %d because of the "
+							"DAGMAN_MAX_SUBMITS_PER_INTERVAL setting of %d\n",
+							dagman.m_user_log_scan_interval,
+							dagman.max_submits_per_interval );
+			} else {
+					// If the user has changed this from the default, leave
+					// their setting alone.
+				debug_printf( DEBUG_QUIET,
+							"Warning: your DAGMAN_USER_LOG_SCAN_INTERVAL "
+							"setting of %d may interfere with the "
+							"DAGMAN_MAX_SUBMITS_PER_INTERVAL setting of %d\n",
+							dagman.m_user_log_scan_interval,
+							dagman.max_submits_per_interval );
+				check_warning_strictness( DAG_STRICT_2 );
+			}
+		}
+	}
+
+	//
+	// ...done checking arguments.
+	//
+    debug_printf( DEBUG_VERBOSE, "DAG Lockfile will be written to %s\n",
+                   lockFileName );
+	if ( dagman.dagFiles.number() == 1 ) {
+    	debug_printf( DEBUG_VERBOSE, "DAG Input file is %s\n",
+				  	dagman.primaryDagFile.Value() );
+	} else {
+		MyString msg = "DAG Input files are ";
+		dagman.dagFiles.rewind();
+		const char *dagFile;
+		while ( (dagFile = dagman.dagFiles.next()) != NULL ) {
+			msg += dagFile;
+			msg += " ";
+		}
+		msg += "\n";
+    	debug_printf( DEBUG_VERBOSE, "%s", msg.Value() );
+	}
+
+		// if requested, wait for someone to attach with a debugger...
+	while( wait_for_debug ) { }
+
+    {
+		MyString cwd;
+		if( !condor_getcwd(cwd) ) {
+			cwd = "<null>";
+		}
+        debug_printf( DEBUG_DEBUG_1, "Current path is %s\n",cwd.Value());
+
+		char *temp = my_username();
+		debug_printf( DEBUG_DEBUG_1, "Current user is %s\n",
+					   temp ? temp : "<null>" );
+		if( temp ) {
+			free( temp );
+		}
+    }
+
+		//
+		// Figure out the rescue DAG to run, if any (this is with "new-
+		// style" rescue DAGs).
+		//
+	int rescueDagNum = 0;
+	MyString rescueDagMsg;
+
+	if ( dagman.doRescueFrom != 0 ) {
+		rescueDagNum = dagman.doRescueFrom;
+		rescueDagMsg.formatstr( "Rescue DAG number %d specified", rescueDagNum );
+		RenameRescueDagsAfter( dagman.primaryDagFile.Value(),
+					dagman.multiDags, rescueDagNum, dagman.maxRescueDagNum );
+
+	} else if ( dagman.autoRescue ) {
+		rescueDagNum = FindLastRescueDagNum(
+					dagman.primaryDagFile.Value(),
+					dagman.multiDags, dagman.maxRescueDagNum );
+		rescueDagMsg.formatstr( "Found rescue DAG number %d", rescueDagNum );
+	}
+
+		//
+		// Fill in values in the deep submit options that we haven't
+		// already set.
+		//
+	dagman._submitDagDeepOpts.useDagDir = dagman.useDagDir;
+	dagman._submitDagDeepOpts.autoRescue = dagman.autoRescue;
+	dagman._submitDagDeepOpts.doRescueFrom = dagman.doRescueFrom;
+	dagman._submitDagDeepOpts.allowVerMismatch = allowVerMismatch;
+	dagman._submitDagDeepOpts.recurse = false;
+
+    //
+    // Create the DAG
+    //
+
+	// Note: a bunch of the parameters we pass here duplicate things
+	// in submitDagOpts, but I'm keeping them separate so we don't have to
+	// bother to construct a new SubmitDagOtions object for splices.
+	// wenger 2010-03-25
+    dagman.dag = new Dag( dagman.dagFiles, dagman.maxJobs,
+						  dagman.maxPreScripts, dagman.maxPostScripts,
+						  dagman.useDagDir,
+						  dagman.maxIdle, dagman.retrySubmitFirst,
+						  dagman.retryNodeFirst, dagman.condorRmExe,
+						  &dagman.DAGManJobId,
+						  dagman.prohibitMultiJobs, dagman.submitDepthFirst,
+						  dagman._defaultNodeLog.Value(),
+						  dagman._generateSubdagSubmits,
+						  &dagman._submitDagDeepOpts,
+						  false ); /* toplevel dag! */
+
+    if( dagman.dag == NULL ) {
+        EXCEPT( "ERROR: out of memory!\n");
+    }
+
+	dagman.dag->SetAbortOnScarySubmit( dagman.abortOnScarySubmit );
+	dagman.dag->SetAllowEvents( dagman.allow_events );
+	dagman.dag->SetConfigFile( dagman._dagmanConfigFile );
+	dagman.dag->SetMaxJobHolds( dagman._maxJobHolds );
+	dagman.dag->SetPostRun(dagman._runPost);
+	if( dagman._priority != 0 ) {
+		dagman.dag->SetDagPriority(dagman._priority);
+	}
+
+    //
+    // Parse the input files.  The parse() routine
+    // takes care of adding jobs and dependencies to the DagMan
+    //
+	dagman.mungeNodeNames = (dagman.dagFiles.number() > 1);
+	parseSetDoNameMunge( dagman.mungeNodeNames );
+   	debug_printf( DEBUG_VERBOSE, "Parsing %d dagfiles\n", 
+		dagman.dagFiles.number() );
+	dagman.dagFiles.rewind();
+	char *dagFile;
+
+	// Here we make a copy of the dagFiles for iteration purposes. Deep inside
+	// of the parsing, copies of the dagman.dagFile string list happen which
+	// mess up the iteration of this list.
+	StringList sl( dagman.dagFiles );
+	sl.rewind();
+	while ( (dagFile = sl.next()) != NULL ) {
+    	debug_printf( DEBUG_VERBOSE, "Parsing %s ...\n", dagFile );
+
+    	if( !parse( dagman.dag, dagFile, dagman.useDagDir ) ) {
+			if ( dagman.dumpRescueDag ) {
+					// Dump the rescue DAG so we can see what we got
+					// in the failed parse attempt.
+    			debug_printf( DEBUG_QUIET, "Dumping rescue DAG "
+							"because of -DumpRescue flag\n" );
+				dagman.dag->Rescue( dagman.primaryDagFile.Value(),
+							dagman.multiDags, dagman.maxRescueDagNum,
+							false, true, false );
+			}
+			
+			// I guess we're setting bForce to true here in case we're
+			// in recovery mode and we have any leftover jobs from
+			// before (e.g., user did condor_hold, modified DAG file
+			// introducing a syntax error, and then did condor_release).
+			// (wenger 2014-10-28)
+			dagman.dag->RemoveRunningJobs( dagman.DAGManJobId, true, true );
+			tolerant_unlink( lockFileName );
+			dagman.CleanUp();
+			
+				// Note: debug_error calls DC_Exit().
+        	debug_error( 1, DEBUG_QUIET, "Failed to parse %s\n",
+					 	dagFile );
+    	}
+	}
+	if( dagman.dag->GetDagPriority() != 0 ) {
+		dagman.dag->SetNodePriorities(); // Applies to the nodes of the dag
+	}
+	dagman.dag->GetJobstateLog().WriteDagmanStarted( dagman.DAGManJobId );
+	if ( rescueDagNum > 0 ) {
+			// Get our Pegasus sequence numbers set correctly.
+		dagman.dag->GetJobstateLog().InitializeRescue();
+	}
+
+	// lift the final set of splices into the main dag.
+	dagman.dag->LiftSplices(SELF);
+
+		//
+		// Actually parse the "new-new" style (partial DAG info only)
+		// rescue DAG here.  Note: this *must* be done after splices
+		// are lifted!
+		//
+	if ( rescueDagNum > 0 ) {
+		dagman.rescueFileToRun = RescueDagName(
+					dagman.primaryDagFile.Value(),
+					dagman.multiDags, rescueDagNum );
+		debug_printf ( DEBUG_QUIET, "%s; running %s in combination with "
+					"normal DAG file%s\n", rescueDagMsg.Value(),
+					dagman.rescueFileToRun.Value(),
+					dagman.multiDags ? "s" : "");
+		debug_printf ( DEBUG_QUIET,
+					"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+
+		debug_printf ( DEBUG_QUIET, "USING RESCUE DAG %s\n",
+					dagman.rescueFileToRun.Value() );
+
+			// Turn off node name munging for the rescue DAG, because
+			// it will already have munged node names.
+		parseSetDoNameMunge( false );
+
+    	if( !parse( dagman.dag, dagman.rescueFileToRun.Value(),
+					dagman.useDagDir ) ) {
+			if ( dagman.dumpRescueDag ) {
+					// Dump the rescue DAG so we can see what we got
+					// in the failed parse attempt.
+    			debug_printf( DEBUG_QUIET, "Dumping rescue DAG "
+							"because of -DumpRescue flag\n" );
+				dagman.dag->Rescue( dagman.primaryDagFile.Value(),
+							dagman.multiDags, dagman.maxRescueDagNum,
+							true, false );
+			}
+			
+			// I guess we're setting bForce to true here in case we're
+			// in recovery mode and we have any leftover jobs from
+			// before (e.g., user did condor_hold, modified DAG (or
+			// rescue DAG) file introducing a syntax error, and then
+			// did condor_release). (wenger 2014-10-28)
+			dagman.dag->RemoveRunningJobs( dagman.DAGManJobId, true, true );
+			tolerant_unlink( lockFileName );
+			dagman.CleanUp();
+			
+				// Note: debug_error calls DC_Exit().
+        	debug_error( 1, DEBUG_QUIET, "Failed to parse %s\n",
+					 	dagFile );
+    	}
+	}
+
+		// This must come after splices are lifted.
+	dagman.dag->CreateMetrics( dagman.primaryDagFile.Value(), rescueDagNum );
+
+	dagman.dag->CheckThrottleCats();
+
+	// fix up any use of $(JOB) in the vars values for any node
+	dagman.dag->ResolveVarsInterpolations();
+
+/*	debug_printf(DEBUG_QUIET, "COMPLETED DAG!\n");*/
+/*	dagman.dag->PrintJobList();*/
+
+#ifndef NOT_DETECT_CYCLE
+	if( dagman.startup_cycle_detect && dagman.dag->isCycle() )
+	{
+		// Note: maybe we should run the final node here, if there is one.
+		// wenger 2011-12-19.
+		debug_error (1, DEBUG_QUIET, "ERROR: a cycle exists in the dag, please check input\n");
+	}
+#endif
+    debug_printf( DEBUG_VERBOSE, "Dag contains %d total jobs\n",
+				  dagman.dag->NumNodes( true ) );
+
+	MyString firstLocation;
+	if ( dagman.dag->GetReject( firstLocation ) ) {
+    	debug_printf( DEBUG_QUIET, "Exiting because of REJECT "
+					"specification in %s.  This most likely means "
+					"that the DAG file was produced with the -DumpRescue "
+					"flag when parsing the original DAG failed.\n",
+					firstLocation.Value() );
+		DC_Exit( EXIT_ERROR );
+		return;
+	}
+
+	dagman.dag->DumpDotFile();
+
+	if ( dagman.dumpRescueDag ) {
+    	debug_printf( DEBUG_QUIET, "Dumping rescue DAG and exiting "
+					"because of -DumpRescue flag\n" );
+		dagman.dag->Rescue( dagman.primaryDagFile.Value(),
+					dagman.multiDags, dagman.maxRescueDagNum, false,
+					false, false );
+		ExitSuccess();
+		return;
+	}
+
+    //------------------------------------------------------------------------
+    // Bootstrap and Recovery
+    //
+    // If the Lockfile exists, this indicates a premature termination
+    // of a previous run of Dagman. If condor log is also present,
+    // we run in recovery mode
+  
+    // If the Daglog is not present, then we do not run in recovery
+    // mode
+	// I don't know what this comment means.  wenger 2013-09-11
+  
+    {
+    	bool recovery = access(lockFileName,  F_OK) == 0;
+      
+        if (recovery) {
+            debug_printf( DEBUG_VERBOSE, "Lock file %s detected, \n",
+                           lockFileName);
+			if (dagman.abortDuplicates) {
+				if (util_check_lock_file(lockFileName) == 1) {
+        			debug_printf( DEBUG_QUIET, "Aborting because it "
+							"looks like another instance of DAGMan is "
+							"currently running on this DAG; if that is "
+							"not the case, delete the lock file (%s) "
+							"and re-submit the DAG.\n", lockFileName );
+					dagman.dag->GetJobstateLog().
+								WriteDagmanFinished( EXIT_RESTART );
+    				dagman.CleanUp();
+					DC_Exit( EXIT_ERROR );
+					// We should never get to here!
+				}
+			}
+
+        } else if ( dagman._doRecovery ) {
+            debug_printf( DEBUG_VERBOSE, "Running in recovery mode because -DoRecovery flag was specified\n" );
+			recovery = true;
+		}
+
+        if ( recovery ) {
+			dagman.CheckLogFileMode( submitFileVersion );
+		}
+
+			//
+			// If this DAGMan continues, it should overwrite the lock
+			// file if it exists.
+			//
+		util_create_lock_file(lockFileName, dagman.abortDuplicates);
+
+        debug_printf( DEBUG_VERBOSE, "Bootstrapping...\n");
+        if( !dagman.dag->Bootstrap( recovery ) ) {
+            dagman.dag->PrintReadyQ( DEBUG_DEBUG_1 );
+            debug_error( 1, DEBUG_QUIET, "ERROR while bootstrapping\n");
+        }
+		print_status();
+    }
+
+    debug_printf( DEBUG_VERBOSE, "Registering condor_event_timer...\n" );
+    daemonCore->Register_Timer( 1, dagman.m_user_log_scan_interval, 
+				condor_event_timer, "condor_event_timer" );
+
+	dagman.dag->SetPendingNodeReportInterval(
+				dagman.pendingReportInterval );
+}
+
+//---------------------------------------------------------------------------
+void
+Dagman::CheckLogFileMode( const CondorVersionInfo &submitFileVersion )
+{
+	if ( submitFileVersion.getMajorVer() > 0 ) {
+			// Version from submit file is valid.
+
+		if ( submitFileVersion.built_since_version( 7,9,1 ) ) {
+				// 7.9.1 and later defaulted to using the default node log,
+				// so don't do anything here.
+			debug_printf( DEBUG_QUIET, "Using default node job log file\n" );
+
+		} else if ( submitFileVersion.compare_versions(
+					"$CondorVersion: 7.9.0 May 2 2012 $" ) == 0 ) {
+				// Default log stuff had some issues in 7.9.0.
+			debug_printf( DEBUG_QUIET, "WARNING: Submit file version 7.9.0 detected.  Bad behavior "
+				"may occur going forward.  Since you were using a development version of HTCondor, "
+				"you probably know what to do to resolve the problem...\n");
+
+		} else {
+				// Pre-7.9.0 -- default log wasn't implemented yet, so
+				// we need to use individual logs from submit files.
+			debug_printf( DEBUG_QUIET, "Submit file version indicates submit is too old. "
+				"DAGMan no longer supports individual per-job log files.\n" );
+			DC_Exit( EXIT_ERROR );
+		}
+
+	} else {
+			// Version from submit file is invalid -- probably
+			// a Pegasus-generated sub-DAG.
+
+			// Check for existence of the default log file
+		bool has_new_default_log = access( dagman._defaultNodeLog.Value(),
+					F_OK ) == 0;
+
+			// Note:  we can run into trouble here -- the default log
+			// file can exist if a pre 7.9 DAGMan had a node job
+			// that didn't define a log file.  In that case, we used
+			// the default log file for that node, but not for
+			// other nodes.
+
+		if ( !has_new_default_log ) {
+				// We are in recovery, but the default log does not exist.
+				// Fall back to 7.8 behavior
+			debug_printf( DEBUG_QUIET, "Default node log does not exist. "
+				"DAGMan no longer supports individual per-job log files.\n" );
+			DC_Exit( EXIT_ERROR );
+		}
+	}
+}
+
+//---------------------------------------------------------------------------
+void
+Dagman::ResolveDefaultLog()
+{
+	char *dagDir = condor_dirname( primaryDagFile.Value() );
+	const char *dagFile = condor_basename( primaryDagFile.Value() );
+
+	MyString owner;
+	MyString nodeName;
+	dagman._dagmanClassad->GetInfo( owner, nodeName );
+
+	_defaultNodeLog.replaceString( "@(DAG_DIR)", dagDir );
+	_defaultNodeLog.replaceString( "@(DAG_FILE)", dagFile );
+	MyString cluster( DAGManJobId._cluster );
+	_defaultNodeLog.replaceString( "@(CLUSTER)", cluster.Value() );
+	free( dagDir );
+	_defaultNodeLog.replaceString( "@(OWNER)", owner.Value() );
+	_defaultNodeLog.replaceString( "@(NODE_NAME)", nodeName.Value() );
+
+	if ( _defaultNodeLog.find( "@" ) >= 0 ) {
+		debug_printf( DEBUG_QUIET, "Warning: "
+					"default node log file %s contains an '@' character -- "
+					"unresolved macro substituion?\n",
+					_defaultNodeLog.Value() );
+		check_warning_strictness( DAG_STRICT_1 );
+	}
+
+		// Force default log file path to be absolute so it works
+		// with -usedagdir and DIR nodes.
+	CondorError errstack;
+	if ( !MultiLogFiles::makePathAbsolute( _defaultNodeLog, errstack) ) {
+       	debug_printf( DEBUG_QUIET, "Unable to convert default log "
+					"file name to absolute path: %s\n",
+					errstack.getFullText().c_str() );
+		dagman.dag->GetJobstateLog().WriteDagmanFinished( EXIT_ERROR );
+		DC_Exit( EXIT_ERROR );
+	}
+
+	if ( _defaultNodeLog.find( "/tmp" ) == 0 ) {
+		debug_printf( DEBUG_QUIET, "Warning: "
+					"default node log file %s is in /tmp\n",
+					_defaultNodeLog.Value() );
+		check_warning_strictness( DAG_STRICT_1 );
+	}
+
+	bool nfsLogIsError = param_boolean( "DAGMAN_LOG_ON_NFS_IS_ERROR", false );
+	debug_printf( DEBUG_NORMAL, "DAGMAN_LOG_ON_NFS_IS_ERROR setting: %s\n",
+				nfsLogIsError ? "True" : "False" );
+	if ( nfsLogIsError ) {
+		bool userlog_locking = param_boolean( "ENABLE_USERLOG_LOCKING", false );
+		if ( userlog_locking ) {
+			bool locks_on_local = param_boolean( "CREATE_LOCKS_ON_LOCAL_DISK", true);
+			if ( locks_on_local ) {
+				debug_printf( DEBUG_QUIET, "Ignoring value of DAGMAN_LOG_ON_NFS_IS_ERROR because ENABLE_USERLOG_LOCKING and CREATE_LOCKS_ON_LOCAL_DISK are true.\n");
+				nfsLogIsError = false;
+			}
+		} else {
+			debug_printf( DEBUG_QUIET, "Ignoring value of DAGMAN_LOG_ON_NFS_IS_ERROR because ENABLE_USERLOG_LOCKING is false.\n");
+			nfsLogIsError = false;
+		}
+	}
+
+		// This function returns true if the log file is on NFS and
+		// that is an error.  If the log file is on NFS, but nfsIsError
+		// is false, it prints a warning but returns false.
+	if ( MultiLogFiles::logFileNFSError( _defaultNodeLog.Value(),
+				nfsLogIsError ) ) {
+		debug_printf( DEBUG_QUIET, "Error: log file %s on NFS\n",
+					_defaultNodeLog.Value() );
+		DC_Exit( EXIT_ERROR );
+	}
+
+	debug_printf( DEBUG_NORMAL, "Default node log file is: <%s>\n",
+				_defaultNodeLog.Value() );
+}
+
+void
+print_status() {
+	debug_printf( DEBUG_VERBOSE, "DAG status: %d (%s)\n",
+				dagman.dag->_dagStatus,
+				dagman.dag->GetStatusName() );
+
+	int total = dagman.dag->NumNodes( true );
+	int done = dagman.dag->NumNodesDone( true );
+	int pre = dagman.dag->PreRunNodeCount();
+	int submitted = dagman.dag->NumJobsSubmitted();
+	int post = dagman.dag->PostRunNodeCount();
+	int ready =  dagman.dag->NumNodesReady();
+	int failed = dagman.dag->NumNodesFailed();
+	int unready = dagman.dag->NumNodesUnready( true );
+
+	debug_printf( DEBUG_VERBOSE, "Of %d nodes total:\n", total );
+
+	debug_printf( DEBUG_VERBOSE, " Done     Pre   Queued    Post   Ready   Un-Ready   Failed\n" );
+
+	debug_printf( DEBUG_VERBOSE, "  ===     ===      ===     ===     ===        ===      ===\n" );
+
+	debug_printf( DEBUG_VERBOSE, "%5d   %5d    %5d   %5d   %5d      %5d    %5d\n",
+				  done, pre, submitted, post, ready, unready, failed );
+	debug_printf( DEBUG_VERBOSE, "%d job proc(s) currently held\n",
+				dagman.dag->NumHeldJobProcs() );
+	dagman.dag->PrintDeferrals( DEBUG_VERBOSE, false );
+
+	if ( dagman._dagmanClassad ) {
+		dagman._dagmanClassad->Update( total, done, pre, submitted, post,
+					ready, failed, unready, dagman.dag->_dagStatus,
+					dagman.dag->Recovery() );
+	}
+}
+
+void condor_event_timer () {
+
+	ASSERT( dagman.dag != NULL );
+
+    //------------------------------------------------------------------------
+    // Proceed with normal operation
+    //
+    // At this point, the DAG is bootstrapped.  All jobs premarked DONE
+    // are in a STATUS_DONE state, and all their children have been
+    // marked ready to submit.
+    //
+    // If recovery was needed, the log file has been completely read and
+    // we are ready to proceed with jobs yet unsubmitted.
+    //------------------------------------------------------------------------
+
+	if( dagman.paused == true ) {
+		debug_printf( DEBUG_DEBUG_1, "(DAGMan paused)\n" );
+		return;
+	}
+
+    static int prevJobsDone = 0;
+    static int prevJobs = 0;
+    static int prevJobsFailed = 0;
+    static int prevJobsSubmitted = 0;
+    static int prevJobsReady = 0;
+    static int prevScriptRunNodes = 0;
+    static int prevJobsHeld = 0;
+
+	dagman.dag->RunWaitingScripts();
+
+	int justSubmitted;
+	debug_printf( DEBUG_DEBUG_1, "Starting submit cycle\n" );
+	justSubmitted = dagman.dag->SubmitReadyJobs(dagman);
+	debug_printf( DEBUG_DEBUG_1, "Finished submit cycle\n" );
+	if( justSubmitted ) {
+			// Note: it would be nice to also have the proc submit
+			// count here.  wenger, 2006-02-08.
+		debug_printf( DEBUG_VERBOSE, "Just submitted %d job%s this cycle...\n",
+				  	justSubmitted, justSubmitted == 1 ? "" : "s" );
+	}
+
+	// If the log has grown
+	if( dagman.dag->DetectCondorLogGrowth() ) {
+		if( dagman.dag->ProcessLogEvents() == false ) {
+			debug_printf( DEBUG_NORMAL,
+						"ProcessLogEvents() returned false\n" );
+			dagman.dag->PrintReadyQ( DEBUG_DEBUG_1 );
+			main_shutdown_rescue( EXIT_ERROR, Dag::DAG_STATUS_ERROR );
+			return;
+		}
+	}
+
+    // print status if anything's changed (or we're in a high debug level)
+    if( prevJobsDone != dagman.dag->NumNodesDone( true )
+        || prevJobs != dagman.dag->NumNodes( true )
+        || prevJobsFailed != dagman.dag->NumNodesFailed()
+        || prevJobsSubmitted != dagman.dag->NumJobsSubmitted()
+        || prevJobsReady != dagman.dag->NumNodesReady()
+        || prevScriptRunNodes != dagman.dag->ScriptRunNodeCount()
+		|| prevJobsHeld != dagman.dag->NumHeldJobProcs()
+		|| DEBUG_LEVEL( DEBUG_DEBUG_4 ) ) {
+		print_status();
+
+        prevJobsDone = dagman.dag->NumNodesDone( true );
+        prevJobs = dagman.dag->NumNodes( true );
+        prevJobsFailed = dagman.dag->NumNodesFailed();
+        prevJobsSubmitted = dagman.dag->NumJobsSubmitted();
+        prevJobsReady = dagman.dag->NumNodesReady();
+        prevScriptRunNodes = dagman.dag->ScriptRunNodeCount();
+		prevJobsHeld = dagman.dag->NumHeldJobProcs();
+		
+		if( dagman.dag->GetDotFileUpdate() ) {
+			dagman.dag->DumpDotFile();
+		}
+	}
+
+	dagman.dag->DumpNodeStatus( false, false );
+
+    ASSERT( dagman.dag->NumNodesDone( true ) + dagman.dag->NumNodesFailed()
+			<= dagman.dag->NumNodes( true ) );
+
+    //
+    // If DAG is complete, hurray, and exit.
+    //
+    if( dagman.dag->DoneSuccess( true ) ) {
+        ASSERT( dagman.dag->NumJobsSubmitted() == 0 );
+		dagman.dag->CheckAllJobs();
+        debug_printf( DEBUG_NORMAL, "All jobs Completed!\n" );
+		dagman.dag->PrintDeferrals( DEBUG_NORMAL, true );
+		if ( dagman.dag->NumIdleJobProcs() != 0 ) {
+			debug_printf( DEBUG_NORMAL, "Warning:  DAGMan thinks there "
+						"are %d idle jobs, even though the DAG is "
+						"completed!\n", dagman.dag->NumIdleJobProcs() );
+			check_warning_strictness( DAG_STRICT_1 );
+		}
+		ExitSuccess();
+		return;
+    }
+
+	//
+	// DAG has failed -- dump rescue DAG.
+	//
+    if( dagman.dag->DoneFailed( true ) ) {
+		debug_printf( DEBUG_QUIET,
+				  "ERROR: the following job(s) failed:\n" );
+		dagman.dag->PrintJobList( Job::STATUS_ERROR );
+		main_shutdown_rescue( EXIT_ERROR, dagman.dag->_dagStatus );
+		return;
+	}
+
+	//
+	// DAG has succeeded but we haven't run final node yet, so do that.
+	//
+    if( dagman.dag->DoneSuccess( false ) ) {
+		dagman.dag->StartFinalNode();
+		return;
+	}
+
+		// If the DAG is halted, we don't want to actually exit yet if
+		// jobs are still in the queue, or any POST scripts need to be
+		// run (we need to run POST scripts so we don't "waste" jobs
+		// that completed; on the other hand, we don't care about waiting
+		// for PRE scripts because they'll be re-run when the rescue
+		// DAG is run anyhow).
+	if ( dagman.dag->IsHalted() && dagman.dag->NumJobsSubmitted() == 0 &&
+				dagman.dag->PostRunNodeCount() == 0 &&
+				!dagman.dag->FinalNodeRun() ) {
+			// Note:  main_shutdown_rescue() will run the final node
+			// if there is one.
+		debug_printf ( DEBUG_QUIET, "Exiting because DAG is halted "
+					"and no jobs or scripts are running\n" );
+		debug_printf( DEBUG_QUIET,
+				  "ERROR: the following job(s) failed:\n" );
+		dagman.dag->PrintJobList( Job::STATUS_ERROR );
+		main_shutdown_rescue( EXIT_ERROR, Dag::DAG_STATUS_HALTED );
+		return;
+	}
+
+    //
+    // If no jobs are submitted and no scripts are running, but the
+    // dag is not complete, then at least one job failed, or a cycle
+    // exists.  (Note that if the DAG completed successfully, we already
+	// returned from this function above.)
+    // 
+    if( dagman.dag->FinishedRunning( false ) ) {
+		Dag::dag_status dagStatus = Dag::DAG_STATUS_OK;
+		if( dagman.dag->DoneFailed( false ) ) {
+			if( DEBUG_LEVEL( DEBUG_QUIET ) ) {
+				debug_printf( DEBUG_QUIET,
+							  "ERROR: the following job(s) failed:\n" );
+				dagman.dag->PrintJobList( Job::STATUS_ERROR );
+			}
+			dagStatus = Dag::DAG_STATUS_NODE_FAILED;
+		} else {
+			// no jobs failed, so a cycle must exist
+			debug_printf( DEBUG_QUIET, "ERROR: DAG finished but not all "
+						"nodes are complete -- checking for a cycle...\n" );
+			if( dagman.dag->isCycle() ) {
+				debug_printf (DEBUG_QUIET, "... ERROR: a cycle exists "
+							"in the dag, please check input\n");
+				dagStatus = Dag::DAG_STATUS_CYCLE;
+			} else {
+				debug_printf (DEBUG_QUIET, "... ERROR: no cycle found; "
+							"unknown error condition\n");
+				dagStatus = Dag::DAG_STATUS_ERROR;
+			}
+			if ( debug_level >= DEBUG_NORMAL ) {
+				dagman.dag->PrintJobList();
+			}
+		}
+
+		main_shutdown_rescue( EXIT_ERROR, dagStatus );
+		return;
+    }
+}
+
+
+void
+main_pre_dc_init( int, char*[] )
+{
+	DC_Skip_Auth_Init();
+	DC_Skip_Core_Init();
+#ifdef WIN32
+	_setmaxstdio(2048);
+#endif
+
+		// Convert the DAGMan log file name to an absolute path if it's
+		// not one already, so that we'll log things to the right file
+		// if we change to a different directory.
+	const char *	logFile = GetEnv( "_CONDOR_DAGMAN_LOG" );
+	if ( logFile && !fullpath( logFile ) ) {
+		MyString	currentDir;
+		if ( condor_getcwd( currentDir ) ) {
+			MyString newLogFile(currentDir);
+			newLogFile += DIR_DELIM_STRING;
+			newLogFile += logFile;
+			SetEnv( "_CONDOR_DAGMAN_LOG", newLogFile.Value() );
+		} else {
+			debug_printf( DEBUG_NORMAL, "ERROR: unable to get cwd: %d, %s\n",
+					errno, strerror(errno) );
+		}
+	}
+}
+
+
+int
+main( int argc, char **argv )
+{
+	set_mySubSystem( "DAGMAN", SUBSYSTEM_TYPE_DAGMAN );
+
+	dc_main_init = main_init;
+	dc_main_config = main_config;
+	dc_main_shutdown_fast = main_shutdown_fast;
+	dc_main_shutdown_graceful = main_shutdown_graceful;
+	dc_main_pre_dc_init = main_pre_dc_init;
+	return dc_main( argc, argv );
+}
+

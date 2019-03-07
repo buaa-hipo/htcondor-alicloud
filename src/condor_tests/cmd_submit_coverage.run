@@ -1,0 +1,172 @@
+#! /usr/bin/env perl
+##**************************************************************
+##
+## Copyright (C) 1990-2007, Condor Team, Computer Sciences Department,
+## University of Wisconsin-Madison, WI.
+## 
+## Licensed under the Apache License, Version 2.0 (the "License"); you
+## may not use this file except in compliance with the License.  You may
+## obtain a copy of the License at
+## 
+##    http://www.apache.org/licenses/LICENSE-2.0
+## 
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##
+##**************************************************************
+##
+## This test check availability and usage contol of the new
+## local, resources in both a static configuration and in psolts.
+## It is model after what we did to test concurrency limits
+## as we are checking the same sorts of things. bt
+##
+##**************************************************************
+
+use CondorTest;
+use CondorUtils;
+use Check::SimpleJob;
+use Check::CondorLog;
+
+my @submitfiles =
+(
+	"cmd_submit_coverage1.cmd",
+);
+
+my $ClusterId = 0;
+
+my $firstappend_condor_config = '
+	DAEMON_LIST = MASTER,SCHEDD,COLLECTOR,NEGOTIATOR,STARTD
+	WANT_SUSPEND = FALSE
+	NEGOTIATION_INTERVAL = 5
+	XSW_LIMIT = 2
+	ALL_DEBUG = D_ALWAYS
+	MACHINE_RESOURCE_Boats = 30
+';
+
+$configfile = CondorTest::CreateLocalConfig($firstappend_condor_config,"cmdsubmitcoverage");
+
+CondorTest::StartCondorWithParams(
+	condor_name => "basickill",
+	fresh_local => "TRUE",
+	condorlocalsrc => "$configfile",
+);
+
+my $executecount = 0;
+my $result = 1;
+my $testname = "cmd_submit_coverage";
+
+my $on_execute = sub {
+	print "********************************** OnExecute *****************************\n";
+};
+
+my $on_hold = sub {
+	print "Expected to be on hold\n Calling CheckForSigTermIgnore \n";
+	runToolNTimes("condor_rm $ClusterId", 1);
+};
+
+my $on_evictedwithoutcheckpoint = sub {
+	print "Evicted Without Checkpoint\n";
+};
+
+my $submitted = sub {
+	print "Submit occured\n";
+	runToolNTimes("condor_rm $ClusterId",1,0);
+};
+
+my $aborted = sub {
+	print "Abort expected\n";
+};
+
+my $GetClusterId = sub {
+	my $cid = shift;
+	$ClusterId = $cid;
+	print "Resquestd Cluster Got $ClusterId\n";
+	##########################
+	#
+	# Convoluted: This function is paased to RunCheck which uses it in RunTest in the fourth
+	# position which is always an undefined variable EXCEPT when it is a call back routine 
+	# to pass out the cluster Id.
+	#
+	##########################
+	#runcmd("condor_q",{emit_output => 1});
+};
+
+#Do a job before setting tesing exit codes
+TLOG "Testing if SimpleJob runs\n";
+$result = SimpleJob::RunCheck(); # jobid 1
+
+#CondorTest::RegisterExecute($testname, $executed);
+#CondorTest::RegisterExitedAbnormal( $testname, $abnormal );
+CondorTest::RegisterAbort( $testname, $aborted );
+#CondorTest::RegisterHold( $testname, $held );
+CondorTest::RegisterSubmit( $testname, $submitted );
+
+my $res = 0;
+foreach my $file (@submitfiles) {
+	$res = CondorTest::RunTest($testname, $file, 0, $GetClusterId);
+	CondorTest::RegisterResult($res, "test_name", $testname);
+	if($res == 1) {
+		CondorTest::debug("$testname: SUCCESS\n",1);
+	} else {
+		CondorTest::debug("$testname: FAILED\n",1);
+	}
+}
+
+# check command line attribute assignment
+TLOG "Testing if submit statements work on submit command line (i.e -append)\n";
+
+my $submit_base = '
+	N = 2
+	executable = x_sleep.pl
+	arguments = $(Process), $(A), $(B), $(D), $(N)
+	D = dog
+	Queue $(N)
+';
+my $submit_append = "'A=alpha' 'b=beta' -append 'N=3' -a 'd=delta'";
+if (CondorUtils::is_windows()) { $submit_append =~ s/'//g; } # windows doesn't like the ' and doesn't need them
+
+print "\tUsing arguments: $submit_append\n";
+print "\tand a submit file that contains:\n$submit_base\n";
+
+my $submit_fname = "cmd_submit_coverage2.$$.submit";
+open( SUBMIT, ">$submit_fname" ) || die "error writing to $submit_fname: $!\n";
+print SUBMIT $submit_base;
+close( SUBMIT );
+
+# remember runCondorTool returns 1 for success.
+my $succeeded = 0;
+my @ads = ();
+my $res = runCondorTool( "condor_submit -dry-run - $submit_fname $submit_append", \@ads, 2, {emit_output=>0} );
+if ( ! $res) {
+	$succeeded = 0;
+} else {
+	# check the output to see if we got only 2 ads and arguments is "ProcId, alpha, beta, 2"
+	my $found = 0;
+	my $ids = "";
+	my $args = "";
+	TLOG "condor_submit -dry relevant output:\n";
+	foreach my $line (@ads) {
+		if ($line =~ /^ProcId\s*=\s*(\d+)\s*$/i) {
+			print "\t$line";
+			$ids .= $1;
+			++$found;
+		} elsif ($line =~ /^Arg[a-z1-9]*\s*=\s*(.*)\s*$/i) {
+			print "\t$line";
+			if ($1 =~ /"(\d+), alpha, beta, delta, 3"/) {
+				$args .= $1;
+				++$found;
+			}
+		}
+	}
+	TLOG "Expected 6 matching lines with ids='012' args='012'.  found $found matching lines with ids='$ids' args='$args'\n";
+	$succeeded = ($found == 6 && $ids eq '012' && $args eq '012');
+
+	# this line gives success with broken -append on queue line for 8.4.0
+	#$succeeded = ($found == 4 && $ids eq '01' && $args eq '01');
+}
+RegisterResult($succeeded,test_name=>$handle, check_name=>"submit_dash_append");
+
+CondorTest::EndTest();

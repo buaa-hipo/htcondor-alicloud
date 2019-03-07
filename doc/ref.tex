@@ -1,0 +1,187 @@
+\documentclass[titlepage,oneside,latex2html,ps2pdf,bookmarks,bookmarksnumbered,plainpages=false,pdfpagelabels]{book}
+% \includeonly{overview,user}
+
+%
+% Input a file written by our Makefile, which will setup to use Times font
+% and pull in the hyperref package if we are building the PDF version.
+\input{timesfont.tex}
+
+%
+%  For use with latex2html
+%
+\usepackage{html}
+\usepackage{graphicx}
+\usepackage{imakeidx}
+\indexsetup{othercode=\small}
+
+\usepackage{upquote}
+\usepackage[T1]{fontenc}
+
+
+%
+%  Set the size of the margins and text area
+%
+\setlength{\evensidemargin}{0.25in}
+\setlength{\oddsidemargin}{0.25in}
+\setlength{\textwidth}{6.5in}
+\setlength{\topmargin}{0.2in}
+\setlength{\headsep}{0.5in}
+\setlength{\topskip}{0in}
+\setlength{\marginparwidth}{1in}
+\setlength{\marginparsep}{0in}
+\setlength{\footskip}{0.75in}
+\newcommand{\ResetParaSpacing}{\setlength{\parskip}{.8em}}
+\ResetParaSpacing
+
+%
+%  Let the figures take up more than half of the page
+%
+\input{figuresizing.tex}
+
+%
+%  Bring in HTCondor macros
+%
+\input{condor-macros.tex}
+\input{man-macros.tex}
+
+%
+% hyphenation of our terms
+\hyphenation{Class-Ads Class-Ad}
+
+%
+%  Fix the headers and footers
+%
+\latex{
+	\usepackage{fancyhdr}
+	\pagestyle{fancy}
+	\fancyhf{}
+	\renewcommand{\sectionmark}[1]{\markright{\thesection.\ #1}}
+	\renewcommand{\subsectionmark}[1]{\markright{\thesubsection.\ #1}}
+\if@twoside
+	\fancyhead[LE,RO]{\thepage}
+	\fancyhead[RE]{\leftmark}
+	\fancyhead[LO]{\rightmark}
+\else
+	\fancyhead[R]{\thepage}
+	\fancyhead[L]{\rightmark}
+\fi
+
+	\fancyfoot[C]{HTCondor \VersionNotice\ Manual}
+	\renewcommand{\headrulewidth}{0.4pt}
+	\renewcommand{\footrulewidth}{0.4pt}
+	\addtolength{\headwidth}{\oddsidemargin}
+
+	%
+	%  Fancy chapter banners
+	%
+	\usepackage[Bjarne]{fncychap}
+}
+
+
+% generate index
+%
+\makeindex
+
+% This turns off the hbox underfull warnings, but
+% does not change the formatting of the text
+% default value is 1000
+\hbadness=10000
+
+\begin{document}
+
+\title{HTCondor\textsuperscript{\small{\texttrademark}} \VersionNotice\ Manual}
+\author{\AuthorNotice}
+\maketitle
+
+\pagenumbering{roman}
+
+\tableofcontents
+
+\sloppy
+
+\begin{small}
+\input{license.tex}
+\end{small}
+
+\newpage
+\pagenumbering{arabic}
+
+\chapter{Overview}
+\label{overview}
+\input{overview/overview.tex}
+
+\chapter{Users' Manual}
+\label{user-manual}
+\input{user-man/user.tex}
+
+\chapter{Administrators' Manual}
+\label{admin-manual}
+\input{admin-man/admin.tex}
+
+\chapter{Miscellaneous Concepts}
+\label{misc-concepts}
+\input{misc/misc.tex}
+
+% Grid Computing
+\chapter{Grid Computing}
+\label{grid-computing}
+\input{grids/grid-computing.tex}
+
+% Cloud Computing
+\chapter{Cloud Computing}
+\label{cloud-computing}
+\input{clouds/cloud-computing.tex}
+
+% APIs
+\chapter{Application Programming Interfaces (APIs)}
+\label{APIs}
+\input{misc/API.tex}
+
+% Platform-specific release notes
+\chapter{Platform-Specific Information}
+\label{platforms}
+\input{platforms/platforms.tex}
+
+\chapter{Frequently Asked Questions (FAQ)}
+\label{sec:FAQ}
+\input{faq.tex}
+
+\chapter{Contrib and Source Modules}
+\label{sec:Contrib}
+\input{contrib/contrib.tex}
+
+\chapter{Version History and Release Notes}
+\label{Version-History}
+\input{version-history/history.tex}
+
+\chapter{Command Reference Manual (man pages)}
+\label{sec:command-reference}
+\input{man-pages/man.tex}
+
+%
+%  The fancy header package gets confused after the man pages, so reset
+%  the header and footer style
+%
+  \fancyhead[LE,RO]{\thepage}
+  \fancyhead[RE]{\leftmark}
+  \fancyhead[LO]{\rightmark}
+  \fancyfoot[C]{HTCondor \VersionNotice\ Reference Manual}
+
+
+% an appendix for all the various kinds and ClassAd attributes
+\chapter{Appendix A:  ClassAd Attributes}
+\label{sec:ClassAd-Attributes}
+\input{misc/attributes.tex}
+% an appendix for tables of values, like error numbers
+\chapter{Appendix B:  Codes and Other Needed Values}
+\label{sec:Magic-Numbers}
+\input{misc/numbers.tex}
+
+
+% the index goes at the end of the documentation
+\backmatter
+\addcontentsline{toc}{chapter}{Index}
+\label{index}
+\printindex
+
+\end{document}

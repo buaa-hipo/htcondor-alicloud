@@ -1,0 +1,12 @@
+condor = install
+startjobs = 100
+incrementjobs = 100
+maxjobs = 500
+duration = 20
+
+universe = scheduler
+type = loading
+
+vms	= 10
+encryption = 3DES,BLOWFISH
+#authentication = GSI
