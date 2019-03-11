@@ -1789,6 +1789,9 @@ bool AlicloudVMStart::workerFunction(char **argv, int argc, std::string &result_
     }
     //vmStartRequest.query_parameters[ "VSwitchId" ] = "vsw-2ze4oqvho9xjy4rvxm539";
     //
+    if( strcasecmp( argv[15], NULLSTRING ) ) {
+        vmStartRequest.query_parameters[ "Amount" ] = argv[15];
+    }
     // Handle user data.
     //
     std::string buffer;
@@ -2182,6 +2185,7 @@ bool AlicloudVMStatus::workerFunction(char **argv, int argc, std::string &result
 	std::ifstream in("/usr/local/condor/config.txt");  
     std::string line; 
     getline (in, line);
+	sRequest.query_parameters[ "PageSize" ] = 100;
 	sRequest.query_parameters[ "RegionId" ] = line;
 
     // We should also be able to set the parameter InstanceId.1
@@ -2205,7 +2209,8 @@ bool AlicloudVMStatus::workerFunction(char **argv, int argc, std::string &result
                 if( asr.instance_id != instanceID ) { continue; }
 
                 resultList.append( asr.instance_id.c_str() );
-                resultList.append( asr.status.c_str() );
+                //resultList.append("running");
+		resultList.append( asr.status.c_str() );
                 resultList.append( asr.ami_id.c_str() );
                 resultList.append( nullStringIfEmpty( asr.stateReasonCode ) );
 
