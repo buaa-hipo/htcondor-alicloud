@@ -1769,7 +1769,7 @@ bool AlicloudVMStart::workerFunction(char **argv, int argc, std::string &result_
     //vmStartRequest.query_parameters[ "SystemDisk.Size" ] = argv[10];
     vmStartRequest.query_parameters[ "KeyPairName" ] = argv[6];
     vmStartRequest.query_parameters[ "InternetMaxBandwidthIn" ] = "200";
-    vmStartRequest.query_parameters[ "InternetMaxBandwidthOut" ] = "10";
+    vmStartRequest.query_parameters[ "InternetMaxBandwidthOut" ] = "100";
     //! vmStartRequest.query_parameters[ "InstanceInitiatedShutdownBehavior" ] = "terminate";
     //! maybe AutoReleaseTime
     
@@ -1790,7 +1790,7 @@ bool AlicloudVMStart::workerFunction(char **argv, int argc, std::string &result_
     //vmStartRequest.query_parameters[ "VSwitchId" ] = "vsw-2ze4oqvho9xjy4rvxm539";
     //
     if( strcasecmp( argv[15], NULLSTRING ) ) {
-        vmStartRequest.query_parameters[ "Amount" ] = argv[15];
+        //vmStartRequest.query_parameters[ "Amount" ] = argv[15];
     }
     // Handle user data.
     //
@@ -1876,7 +1876,7 @@ void vmSpotESH( void * vUserData, const XML_Char * name, const XML_Char ** ) {
     vmSpotUD * vsud = (vmSpotUD *)vUserData;
     if( strcasecmp( ignoringNameSpace( name ), "instanceId" ) == 0 ) {
         vsud->inInstanceId = true;
-    } else if( strcasecmp( ignoringNameSpace( name ), "spotInstanceRequestId" ) == 0 ) {
+    } else if( strcasecmp( ignoringNameSpace( name ), "InstanceIdSet" ) == 0 ) {
         vsud->inSpotRequestId = true;
     }
 }
@@ -1894,7 +1894,7 @@ void vmSpotEEH( void * vUserData, const XML_Char * name ) {
     vmSpotUD * vsud = (vmSpotUD *)vUserData;
     if( strcasecmp( ignoringNameSpace( name ), "instanceId" ) == 0 ) {
         vsud->inInstanceId = false;
-    } else if( strcasecmp( ignoringNameSpace( name ), "spotInstanceRequestId" ) == 0 ) {
+    } else if( strcasecmp( ignoringNameSpace( name ), "InstanceIdSet" ) == 0 ) {
         vsud->inSpotRequestId = false;
     }
 }
@@ -1942,64 +1942,77 @@ bool AlicloudVMStartSpot::workerFunction( char ** argv, int argc, std::string & 
     vmSpotRequest.serviceURL = argv[2];
     vmSpotRequest.accessKeyFile = argv[3];
     vmSpotRequest.secretKeyFile = argv[4];
-    vmSpotRequest.query_parameters[ "Action" ] = "RequestSpotInstances";
+    /*vmSpotRequest.query_parameters[ "Action" ] = "RequestSpotInstances";
     vmSpotRequest.query_parameters[ "LaunchSpecification.ImageId" ] = argv[5];
     vmSpotRequest.query_parameters[ "InstanceCount" ] = "1";
-    vmSpotRequest.query_parameters[ "SpotPrice" ] = argv[6];
+    vmSpotRequest.query_parameters[ "SpotPrice" ] = argv[6];*/
+    vmSpotRequest.query_parameters[ "Action" ] = "RunInstances";
+    vmSpotRequest.query_parameters[ "ImageId" ] = argv[5];
+    vmSpotRequest.query_parameters[ "Amount" ] = "1";
+    vmSpotRequest.query_parameters[ "SpotPriceLimit" ] = argv[6];
+
+    vmSpotRequest.query_parameters[ "InstanceChargeType" ] = "PostPaid";
+    vmSpotRequest.query_parameters[ "SpotStrategy" ] = "SpotWithPriceLimit";
+    vmSpotRequest.query_parameters[ "InternetMaxBandwidthOut" ] = "100";
+
+	std::ifstream in("/usr/local/condor/config.txt");  
+    std::string line; 
+    getline (in, line);
+    vmSpotRequest.query_parameters[ "RegionId" ] = line;
 
     // Optional attributes / parameters.
     if( strcasecmp( argv[7], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.KeyName" ] = argv[7];
+        vmSpotRequest.query_parameters[ "KeyPairName" ] = argv[7];
     }
 
     if( strcasecmp( argv[10], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.InstanceType" ] = argv[10];
+        vmSpotRequest.query_parameters[ "InstanceType" ] = argv[10];
     } else {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.InstanceType" ] = "m1.small";
+        vmSpotRequest.query_parameters[ "InstanceType" ] = "m1.small";
     }
 
     if( strcasecmp( argv[11], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.Placement.AvailabilityZone" ] = argv[11];
+        //vmSpotRequest.query_parameters[ "LaunchSpecification.Placement.AvailabilityZone" ] = argv[11];
     }
 
     if( strcasecmp( argv[12], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.SubnetId" ] = argv[12];
+        vmSpotRequest.query_parameters[ "VSwitchId" ] = argv[12];
     }
 
     if( strcasecmp( argv[13], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.NetworkInterface.1.PrivateIpAddress" ] = argv[13];
+        //vmSpotRequest.query_parameters[ "LaunchSpecification.NetworkInterface.1.PrivateIpAddress" ] = argv[13];
     }
 
     // Use LaunchGroup, which we don't otherwise support, as an idempotence
     // token, since RequestSpotInstances doesn't support ClientToken.
     if( strcasecmp( argv[14], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchGroup" ] = argv[14];
+        //vmSpotRequest.query_parameters[ "LaunchGroup" ] = argv[14];
     }
 
     if( strcasecmp( argv[15], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.IamInstanceProfile.Arn" ] = argv[15];
+        //vmSpotRequest.query_parameters[ "LaunchSpecification.IamInstanceProfile.Arn" ] = argv[15];
     }
 
     if( strcasecmp( argv[16], NULLSTRING ) ) {
-        vmSpotRequest.query_parameters[ "LaunchSpecification.IamInstanceProfile.Name" ] = argv[16];
+        //vmSpotRequest.query_parameters[ "LaunchSpecification.IamInstanceProfile.Name" ] = argv[16];
     }
 
     int i = 17;
     int sgNum = 1;
     for( ; i < argc; ++i ) {
         if( strcasecmp( argv[ i ], NULLSTRING ) == 0 ) { break; }
-        std::ostringstream groupName;
-        groupName << "LaunchSpecification.SecurityGroup." << sgNum++;
-        vmSpotRequest.query_parameters[ groupName.str() ] = argv[ i ];
+        //std::ostringstream groupName;
+        //groupName << "LaunchSpecification.SecurityGroup." << sgNum++;
+        //vmSpotRequest.query_parameters[ groupName.str() ] = argv[ i ];
     }
 
     ++i;
     int sgidNum = 1;
     for( ; i < argc; ++i ) {
         if( strcasecmp( argv[ i ], NULLSTRING ) == 0 ) { break; }
-        std::ostringstream groupID;
-        groupID << "LaunchSpecification.SecurityGroupId." << sgidNum++;
-        vmSpotRequest.query_parameters[ groupID.str() ] = argv[ i ];
+        //std::ostringstream groupID;
+        //groupID << "LaunchSpecification.SecurityGroupId." << sgidNum++;
+        vmSpotRequest.query_parameters["SecurityGroupId"] = argv[ i ];
     }
 
     // Handle user data.
@@ -2019,7 +2032,7 @@ bool AlicloudVMStartSpot::workerFunction( char ** argv, int argc, std::string & 
     }
     if( ! buffer.empty() ) {
         char * base64Encoded = condor_base64_encode( (const unsigned char *)buffer.c_str(), buffer.length() );
-        vmSpotRequest.query_parameters[ "LaunchSpecification.UserData" ] = base64Encoded;
+        vmSpotRequest.query_parameters[ "UserData" ] = base64Encoded;
         free( base64Encoded );
     }
 
@@ -2185,7 +2198,7 @@ bool AlicloudVMStatus::workerFunction(char **argv, int argc, std::string &result
 	std::ifstream in("/usr/local/condor/config.txt");  
     std::string line; 
     getline (in, line);
-	sRequest.query_parameters[ "PageSize" ] = 100;
+	sRequest.query_parameters[ "PageSize" ] = "100";
 	sRequest.query_parameters[ "RegionId" ] = line;
 
     // We should also be able to set the parameter InstanceId.1
@@ -2775,6 +2788,7 @@ bool AlicloudVMStatusAll::workerFunction(char **argv, int argc, std::string &res
     saRequest.accessKeyFile = argv[3];
     saRequest.secretKeyFile = argv[4];
     saRequest.query_parameters[ "Action" ] = "DescribeInstances";
+    saRequest.query_parameters[ "PageSize" ] = "100";
     //! 
     
     /*std::ifstream f("/usr/local/condor/config.txt");
