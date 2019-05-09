@@ -1,0 +1,81 @@
+spot部分：
+
+1.
+ECS_VM_START_SPOT
+ECS_VM_STOP_SPOT
+ECS_VM_STATUS_SPOT
+ECS_VM_STATUS_ALL_SPOT
+牵一发动全身，不能仅改ECS_VM_START_SPOT 或者 从网格部分下手
+
+2.
+若是进行全体修改
+需要对以前的ECS_VM_STATUS ECS_VM_STATUS_ALL作修改，过滤实例
+而ECS_VM_STATUS_SPOT ECS_VM_STATUS_ALL_SPOT过滤按量计费实例
+
+
+
+多量申请虚拟机：
+阿里云ECS_VM_STATUS是分页查询，默认每页10个 最大100个 修改到100后DONE现象未发现 但是会有HOLD
+超过100台就只能从网格部分下手修改
+
+
+It was good talking with you today. I’m glad we got things working fairly quickly.
+To add a first-class alicloud grid type, you can start by duplicating the ec2 code in the following files and directories:
+
+src/condor_includes/condor_attributes.h
+src/condor_utils/submit_utils.*
+src/condor_utils/param_info.in
+src/condor_gridmanager/gridmanager.cpp
+src/condor_gridmanager/ec2*
+
+In the gridmanager code, you would create new alicloudjob.* and alicloudresource.* source files with new classes.
+
+Doing a simple copy-and-rename will give you a good starting point that users can try out. One next step after that would be to remove code for any EC2 features that don’t exist in Alicloud. For example, if Alicloud doesn’t have spot pricing, then we could remove the relevant pieces in the duplicated Condor code.
+
+- Jaime
+
+
+
+
+src/condor_includes/condor_attributes.h
+内容：EC2JOB宏定义 line934-964
+修改思路：在文件内复制一份ESC
+
+src/condor_utils/submit_utils.h
+内容：宏定义 定义了sub文件各项参数
+修改思路：在文件内复制一份ESC，增加地区项，可以选择性删除
+
+src/condor_utils/submit_utils.cpp
+内容：sub文件参数检索 处理 line：3058-4929
+修改思路：在文件内复制一份ESC，增加地区项，可以选择性删除
+
+src/condor_utils/param_info.in
+内容：配置文件 htcondor的配置项
+修改思路：在文件内复制一份ESC
+
+src/condor_gridmanager/gridmanager.cpp
+内容：网格内容选择 line:352-368
+修改思路：添加头文件ecsjob.h 复制一份ECS，做EC2 ECS选择
+
+
+
+src/condor_gridmanager/ec2-gahp-client.cpp
+内容：ec2_gahp命令调用准备 将信息转化为标准ec2_gahp命令
+修改思路：复制一份整个文件，对参数项，参数个数调整
+
+
+src/condor_gridmanager/ec2job.h
+src/condor_gridmanager/ec2job.cpp
+内容：任务运行的函数
+修改思路：复制一份，改名
+
+src/condor_gridmanager/ec2resource.h
+src/condor_gridmanager/ec2resource.cpp
+内容：密钥对以及实例状态管理
+修改思路：复制一份，改名
+
+
+
+
+152.136.81.156
+buaa_CS@2019
