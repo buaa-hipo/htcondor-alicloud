@@ -963,6 +963,38 @@ extern const char ATTR_SEC_AUTHENTICATED_USER [];
 
 //************* End of changes for EC2 Jobs *****************//
 
+//************* Added for ECS Jobs ***************************//
+#define ATTR_ECS_ACCESS_KEY_ID  "ECSAccessKeyId"
+#define ATTR_ECS_SECRET_ACCESS_KEY  "ECSSecretAccessKey"
+#define ATTR_ECS_AMI_ID  "ECSAmiID"
+#define ATTR_ECS_KEY_PAIR  "ECSKeyPair"
+#define ATTR_ECS_KEY_PAIR_FILE  "ECSKeyPairFile"
+#define ATTR_ECS_SECURITY_GROUPS  "ECSSecurityGroups"
+#define ATTR_ECS_SECURITY_IDS  "ECSSecurityIDs"
+#define ATTR_ECS_USER_DATA  "ECSUserData"
+#define ATTR_ECS_USER_DATA_FILE  "ECSUserDataFile"
+#define ATTR_ECS_REMOTE_VM_NAME  "ECSRemoteVirtualMachineName"
+#define ATTR_ECS_INSTANCE_TYPE  "ECSInstanceType"
+#define ATTR_ECS_INSTANCE_NAME  "ECSInstanceName"
+#define ATTR_ECS_ELASTIC_IP  "ECSElasticIp"
+#define ATTR_ECS_AVAILABILITY_ZONE  "ECSAvailabilityZone"
+#define ATTR_ECS_EBS_VOLUMES  "ECSElasticBlockStorageVolumes"
+#define ATTR_ECS_VPC_SUBNET  "ECSVpcSubnet"
+#define ATTR_ECS_VPC_IP  "ECSVpcIp"
+#define ATTR_ECS_TAG_NAMES  "ECSTagNames"
+#define ATTR_ECS_TAG_PREFIX  "ECSTag"
+#define ATTR_ECS_SPOT_PRICE  "ECSSpotPrice"
+#define ATTR_ECS_SPOT_REQUEST_ID  "ECSSpotRequestID"
+#define ATTR_ECS_STATUS_REASON_CODE  "ECSStatusReasonCode"
+#define ATTR_ECS_SERVER_TYPE  "ECSServerType"
+#define ATTR_ECS_BLOCK_DEVICE_MAPPING "ECSBlockDeviceMapping"
+#define ATTR_ECS_PARAM_NAMES  "ECSParamNames"
+#define ATTR_ECS_PARAM_PREFIX  "ECSParam"
+#define ATTR_ECS_IAM_PROFILE_ARN  "ECSIamProfileArn"
+#define ATTR_ECS_IAM_PROFILE_NAME  "ECSIamProfileName"
+
+//************* End of changes for ECS Jobs *****************//
+
 #define ATTR_REQUEST_CPUS  "RequestCpus"
 #define ATTR_REQUEST_MEMORY  "RequestMemory"
 #define ATTR_REQUEST_DISK  "RequestDisk"
