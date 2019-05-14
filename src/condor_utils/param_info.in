@@ -1568,6 +1568,10 @@ type=int
 default=20
 type=int
 
+[GRIDMANAGER_MAX_SUBMITTED_JOBS_PER_RESOURCE_ECS]
+default=20
+type=int
+
 [GAHP]
 default=
 type=string
@@ -3629,6 +3633,11 @@ default = https://ec2.us-east-1.amazonaws.com
 type=string
 tags=annex
 
+[ANNEX_DEFAULT_ECS_URL]
+default = https://cn-beijing.log.aliyuncs.com
+type=string
+tags=annex
+
 [ANNEX_DEFAULT_CWE_URL]
 default = https://events.us-east-1.amazonaws.com
 type=string
@@ -5223,15 +5232,26 @@ default=$(MAX_DEFAULT_LOG)
 default=/tmp/EC2GahpLog.$(USERNAME)
 win32_default=NUL
 
+[ECS_GAHP_LOG]
+default=/tmp/ECSGahpLog.$(USERNAME)
+win32_default=NUL
+
 [EC2_GAHP_DEBUG]
 default=D_PID
 description=Debug logging options for the ec2_gahp
+
+[ECS_GAHP_DEBUG]
+default=D_PID
+description=Debug logging options for the ecs_gahp
 
 [GT2_GAHP]
 default=$(SBIN)/gahp_server
 
 [EC2_GAHP]
 default=$(SBIN)/ec2_gahp
+
+[ECS_GAHP]
+default=$(SBIN)/ecs_gahp
 
 [GCE_GAHP]
 default=$(SBIN)/gce_gahp
@@ -6105,6 +6125,7 @@ default : @end
 win32_default : @end
 	QUEUE_SUPER_USERS=condor, SYSTEM
 	EC2_GAHP_LOG=/tmp/EC2GahpLog.$(USERNAME)
+	ECS_GAHP_LOG=/tmp/ECSGahpLog.$(USERNAME)
 	MAIL_FROM=
 	VMWARE_SCRIPT=$(SBIN)\condor_vm_vmware.exe
 	JAVA_CLASSPATH_SEPARATOR=:
