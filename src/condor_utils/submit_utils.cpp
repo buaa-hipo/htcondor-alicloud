@@ -3089,6 +3089,12 @@ int SubmitHash::SetGridParams()
 			ABORT_AND_RETURN( 1 );
 		}
 		
+		//wy
+		if ( strcasecmp( tmp, "ecs" ) == 0 ) {
+			push_error(stderr, "ECS grid jobs require a "
+					"service URL\n");
+			ABORT_AND_RETURN( 1 );
+		}
 
 		free( tmp );
 
@@ -3549,6 +3555,381 @@ int SubmitHash::SetGridParams()
 	if ( !tagNames.isEmpty() ) {
 		buffer.formatstr("%s = \"%s\"",
 					ATTR_EC2_TAG_NAMES, tagNames.print_to_delimed_string(","));
+		InsertJobExpr(buffer.Value());
+	}
+
+	if ( (tmp = submit_param( SUBMIT_KEY_BoincAuthenticatorFile,
+							  ATTR_BOINC_AUTHENTICATOR_FILE )) ) {
+		// check authenticator file can be opened
+		if ( !DisableFileChecks ) {
+			if( ( fp=safe_fopen_wrapper_follow(full_path(tmp),"r") ) == NULL ) {
+				push_error(stderr, "Failed to open authenticator file %s (%s)\n", 
+								 full_path(tmp), strerror(errno));
+				ABORT_AND_RETURN( 1 );
+			}
+			fclose(fp);
+		}
+		buffer.formatstr( "%s = \"%s\"", ATTR_BOINC_AUTHENTICATOR_FILE,
+						  full_path(tmp) );
+		InsertJobExpr( buffer.Value() );
+		free( tmp );
+	} else if ( gridType == "boinc" ) {
+		push_error(stderr, "BOINC jobs require a \"%s\" parameter\n", SUBMIT_KEY_BoincAuthenticatorFile );
+		ABORT_AND_RETURN( 1 );
+	}
+
+	//wy
+	//
+	// ECS grid-type submit attributes
+	//
+	if ( (tmp = submit_param( SUBMIT_KEY_ECSAccessKeyId, ATTR_ECS_ACCESS_KEY_ID )) ) {
+		// check public key file can be opened
+		if ( !DisableFileChecks ) {
+			if( ( fp=safe_fopen_wrapper_follow(full_path(tmp),"r") ) == NULL ) {
+				push_error(stderr, "Failed to open public key file %s (%s)\n", 
+							 full_path(tmp), strerror(errno));
+				ABORT_AND_RETURN( 1 );
+			}
+			fclose(fp);
+
+			StatInfo si(full_path(tmp));
+			if (si.IsDirectory()) {
+				push_error(stderr, "%s is a directory\n", full_path(tmp));
+				ABORT_AND_RETURN( 1 );
+			}
+		}
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_ACCESS_KEY_ID, full_path(tmp) );
+		InsertJobExpr( buffer.Value() );
+		free( tmp );
+	} else if ( gridType == "ecs" ) {
+		push_error(stderr, "ECS jobs require a \"%s\" parameter\n", SUBMIT_KEY_ECSAccessKeyId );
+		ABORT_AND_RETURN( 1 );
+	}
+	
+	if ( (tmp = submit_param( SUBMIT_KEY_ECSSecretAccessKey, ATTR_ECS_SECRET_ACCESS_KEY )) ) {
+		// check private key file can be opened
+		if ( !DisableFileChecks ) {
+			if( ( fp=safe_fopen_wrapper_follow(full_path(tmp),"r") ) == NULL ) {
+				push_error(stderr, "Failed to open private key file %s (%s)\n", 
+							 full_path(tmp), strerror(errno));
+				ABORT_AND_RETURN( 1 );
+			}
+			fclose(fp);
+
+			StatInfo si(full_path(tmp));
+			if (si.IsDirectory()) {
+				push_error(stderr, "%s is a directory\n", full_path(tmp));
+				ABORT_AND_RETURN( 1 );
+			}
+		}
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_SECRET_ACCESS_KEY, full_path(tmp) );
+		InsertJobExpr( buffer.Value() );
+		free( tmp );
+	} else if ( gridType == "ecs" ) {
+		push_error(stderr, "ECS jobs require a \"%s\" parameter\n", SUBMIT_KEY_ECSSecretAccessKey );
+		ABORT_AND_RETURN( 1 );
+	}
+	
+	bool bKeyPairPresent=false;
+	
+	// ECSKeyPair is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSKeyPair, ATTR_ECS_KEY_PAIR )) ||
+		(tmp = submit_param( SUBMIT_KEY_ECSKeyPairAlt, ATTR_ECS_KEY_PAIR ))) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_KEY_PAIR, tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+		bKeyPairPresent=true;
+	}
+	
+	// ECSKeyPairFile is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSKeyPairFile, ATTR_ECS_KEY_PAIR_FILE )) ||
+		(tmp = submit_param( SUBMIT_KEY_ECSKeyPairFileAlt, ATTR_ECS_KEY_PAIR_FILE ))) {
+	    if (bKeyPairPresent)
+	    {
+	      push_warning(stderr, "ECS job(s) contain both ecs_keypair && ecs_keypair_file, ignoring ecs_keypair_file\n");
+	    }
+	    else
+	    {
+	      // for the relative path, the keypair output file will be written to the IWD
+	      buffer.formatstr( "%s = \"%s\"", ATTR_ECS_KEY_PAIR_FILE, full_path(tmp) );
+	      free( tmp );
+	      InsertJobExpr( buffer.Value() );
+	    }
+	}
+
+	// Optional.
+	if( (tmp = submit_param( SUBMIT_KEY_ECSSecurityGroups, ATTR_ECS_SECURITY_GROUPS )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_SECURITY_GROUPS, tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+
+	// Optional.
+	if( (tmp = submit_param( SUBMIT_KEY_ECSSecurityIDs, ATTR_ECS_SECURITY_IDS )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_SECURITY_IDS, tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+
+	if ( (tmp = submit_param( SUBMIT_KEY_ECSAmiID, ATTR_ECS_AMI_ID )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_AMI_ID, tmp );
+		InsertJobExpr( buffer.Value() );
+		free( tmp );
+	} else if ( gridType == "ecs"  ) {
+		push_error(stderr, "ECS jobs require a \"%s\" parameter\n", SUBMIT_KEY_ECSAmiID );
+		ABORT_AND_RETURN( 1 );
+	}
+	
+	// ECSInstanceType is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSInstanceType, ATTR_ECS_INSTANCE_TYPE )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_INSTANCE_TYPE, tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+	
+	// ECSVpcSubnet is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSVpcSubnet, ATTR_ECS_VPC_SUBNET )) ) {
+		buffer.formatstr( "%s = \"%s\"",ATTR_ECS_VPC_SUBNET , tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+	
+	// ECSVpcIP is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSVpcIP, ATTR_ECS_VPC_IP )) ) {
+		buffer.formatstr( "%s = \"%s\"",ATTR_ECS_VPC_IP , tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+		
+	// ECSElasticIP is not a necessary parameter
+    if( (tmp = submit_param( SUBMIT_KEY_ECSElasticIP, ATTR_ECS_ELASTIC_IP )) ) {
+        buffer.formatstr( "%s = \"%s\"", ATTR_ECS_ELASTIC_IP, tmp );
+        free( tmp );
+        InsertJobExpr( buffer.Value() );
+    }
+	
+	bool HasAvailabilityZone=false;
+	// ECSAvailabilityZone is not a necessary parameter
+    if( (tmp = submit_param( SUBMIT_KEY_ECSAvailabilityZone, ATTR_ECS_AVAILABILITY_ZONE )) ) {
+        buffer.formatstr( "%s = \"%s\"", ATTR_ECS_AVAILABILITY_ZONE, tmp );
+        free( tmp );
+        InsertJobExpr( buffer.Value() );
+		HasAvailabilityZone=true;
+    }
+	
+	// ECSEBSVolumes is not a necessary parameter
+    if( (tmp = submit_param( SUBMIT_KEY_ECSEBSVolumes, ATTR_ECS_EBS_VOLUMES )) ) {
+		if( validate_disk_param(tmp, 2, 2) == false ) 
+        {
+			push_error(stderr, "'ecs_ebs_volumes' has incorrect format.\n"
+					"The format shoud be like "
+					"\"<instance_id>:<devicename>\"\n"
+					"e.g.> For single volume: ecs_ebs_volumes = vol-35bcc15e:hda1\n"
+					"      For multiple disks: ecs_ebs_volumes = "
+					"vol-35bcc15e:hda1,vol-35bcc16f:hda2\n");
+			ABORT_AND_RETURN(1);
+		}
+		
+		if (!HasAvailabilityZone)
+		{
+			push_error(stderr, "'ecs_ebs_volumes' requires 'ecs_availability_zone'\n");
+			ABORT_AND_RETURN(1);
+		}
+		
+        buffer.formatstr( "%s = \"%s\"", ATTR_ECS_EBS_VOLUMES, tmp );
+        free( tmp );
+        InsertJobExpr( buffer.Value() );
+    }
+
+	// ECSSpotPrice is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSSpotPrice, ATTR_ECS_SPOT_PRICE )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_SPOT_PRICE, tmp);
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+
+	// ECSBlockDeviceMapping is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSBlockDeviceMapping, ATTR_ECS_BLOCK_DEVICE_MAPPING )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_BLOCK_DEVICE_MAPPING, tmp );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+		bKeyPairPresent=true;
+	}
+
+	// ECSUserData is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSUserData, ATTR_ECS_USER_DATA )) ) {
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_USER_DATA, tmp);
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+
+	// ECSUserDataFile is not a necessary parameter
+	if( (tmp = submit_param( SUBMIT_KEY_ECSUserDataFile, ATTR_ECS_USER_DATA_FILE )) ) {
+		// check user data file can be opened
+		if ( !DisableFileChecks ) {
+			if( ( fp=safe_fopen_wrapper_follow(full_path(tmp),"r") ) == NULL ) {
+				push_error(stderr, "Failed to open user data file %s (%s)\n", 
+								 full_path(tmp), strerror(errno));
+				ABORT_AND_RETURN( 1 );
+			}
+			fclose(fp);
+		}
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_USER_DATA_FILE, 
+				full_path(tmp) );
+		free( tmp );
+		InsertJobExpr( buffer.Value() );
+	}
+
+	// You can only have one IAM [Instance] Profile, so you can only use
+	// one of the ARN or the Name.
+	bool bIamProfilePresent = false;
+	if( (tmp = submit_param( SUBMIT_KEY_ECSIamProfileArn, ATTR_ECS_IAM_PROFILE_ARN )) ) {
+		bIamProfilePresent = true;
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_IAM_PROFILE_ARN, tmp );
+		InsertJobExpr( buffer.Value() );
+		free( tmp );
+	}
+
+	if( (tmp = submit_param( SUBMIT_KEY_ECSIamProfileName, ATTR_ECS_IAM_PROFILE_NAME )) ) {
+		if( bIamProfilePresent ) {
+			push_warning( stderr, "ECS job(s) contain both %s and %s; ignoring %s.\n",
+				SUBMIT_KEY_ECSIamProfileArn, SUBMIT_KEY_ECSIamProfileName, SUBMIT_KEY_ECSIamProfileName );
+		} else {
+			buffer.formatstr( "%s = \"%s\"", ATTR_ECS_IAM_PROFILE_NAME, tmp );
+			InsertJobExpr( buffer.Value() );
+		}
+		free( tmp );
+	}
+
+	//
+	// Handle arbitrary ECS RunInstances parameters.
+	//
+	StringList paramNames;
+	if( (tmp = submit_param( SUBMIT_KEY_ECSParamNames, ATTR_ECS_PARAM_NAMES )) ) {
+		paramNames.initializeFromString( tmp );
+		free( tmp );
+	}
+
+	unsigned int prefixLength = (unsigned int)strlen( SUBMIT_KEY_ECSParamPrefix );
+	HASHITER smsIter = hash_iter_begin( SubmitMacroSet );
+	for( ; ! hash_iter_done( smsIter ); hash_iter_next( smsIter ) ) {
+		const char * key = hash_iter_key( smsIter );
+
+		if( strcasecmp( key, SUBMIT_KEY_ECSParamNames ) == 0 ) {
+			continue;
+		}
+
+		if( strncasecmp( key, SUBMIT_KEY_ECSParamPrefix, prefixLength ) != 0 ) {
+			continue;
+		}
+
+		const char * paramName = &key[prefixLength];
+		const char * paramValue = hash_iter_value( smsIter );
+		buffer.formatstr( "%s_%s = \"%s\"", ATTR_ECS_PARAM_PREFIX, paramName, paramValue );
+		InsertJobExpr( buffer.Value() );
+		set_submit_param_used( key );
+
+		bool found = false;
+		paramNames.rewind();
+		char * existingPN = NULL;
+		while( (existingPN = paramNames.next()) != NULL ) {
+			std::string converted = existingPN;
+			std::replace( converted.begin(), converted.end(), '.', '_' );
+			if( strcasecmp( converted.c_str(), paramName ) == 0 ) {
+				found = true;
+				break;
+			}
+		}
+		if( ! found ) {
+			paramNames.append( paramName );
+		}
+	}
+	hash_iter_delete( & smsIter );
+
+	if( ! paramNames.isEmpty() ) {
+		char * paramNamesStr = paramNames.print_to_delimed_string( ", " );
+		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_PARAM_NAMES, paramNamesStr );
+		free( paramNamesStr );
+		InsertJobExpr( buffer.Value() );
+	}
+
+
+		//
+		// Handle ECS tags - don't require user to specify the list of tag names
+		//
+		// Collect all the ECS tag names, then param for each
+		//
+		// ECSTagNames is needed because ECS tags are case-sensitive
+		// and ClassAd attribute names are not. We build it for the
+		// user, but also let the user override entries in it with
+		// their own case preference. Ours will always be lower-cased.
+		//
+
+	StringList tagNames;
+	if ((tmp = submit_param(SUBMIT_KEY_ECSTagNames, ATTR_ECS_TAG_NAMES))) {
+		tagNames.initializeFromString(tmp);
+		free(tmp); tmp = NULL;
+	}
+
+	HASHITER it = hash_iter_begin(SubmitMacroSet);
+	int prefix_len = (int)strlen(ATTR_ECS_TAG_PREFIX);
+	for (;!hash_iter_done(it); hash_iter_next(it)) {
+		const char *key = hash_iter_key(it);
+		const char *name = NULL;
+		if (!strncasecmp(key, ATTR_ECS_TAG_PREFIX, prefix_len) &&
+			key[prefix_len]) {
+			name = &key[prefix_len];
+		} else if (!strncasecmp(key, "ecs_tag_", 8) &&
+				   key[8]) {
+			name = &key[8];
+		} else {
+			continue;
+		}
+
+		if (strncasecmp(name, "Names", 5) &&
+			!tagNames.contains_anycase(name)) {
+			tagNames.append(name);
+		}
+	}
+	hash_iter_delete(&it);
+
+	std::stringstream ss;
+	char *tagName;
+	tagNames.rewind();
+	while ((tagName = tagNames.next())) {
+			// XXX: Check that tagName does not contain an equal sign (=)
+		std::string tag;
+		std::string tagAttr(ATTR_ECS_TAG_PREFIX); tagAttr.append(tagName);
+		std::string tagCmd("ecs_tag_"); tagCmd.append(tagName);
+		char *value = NULL;
+		if ((value = submit_param(tagCmd.c_str(), tagAttr.c_str()))) {
+			buffer.formatstr("%s = \"%s\"", tagAttr.c_str(), value);
+			InsertJobExpr(buffer.Value());
+			free(value); value = NULL;
+		} else {
+				// XXX: Should never happen, we just searched for the names, error or something
+		}
+	}
+
+		// For compatibility with the AWS Console, set the Name tag to
+		// be the executable, which is just a label for ECS jobs
+	tagNames.rewind();
+	if (!tagNames.contains_anycase("Name")) {
+		if (JobUniverse == CONDOR_UNIVERSE_GRID && gridType == "ecs") {
+			bool wantsNameTag = submit_param_bool( "WantNameTag", NULL, true );
+			if( wantsNameTag ) {
+				char *ename = submit_param(SUBMIT_KEY_Executable, ATTR_JOB_CMD); // !NULL by now
+				tagNames.append("Name");
+				buffer.formatstr("%sName = \"%s\"", ATTR_ECS_TAG_PREFIX, ename);
+				InsertJobExpr(buffer);
+				free(ename); ename = NULL;
+			}
+		}
+	}
+
+	if ( !tagNames.isEmpty() ) {
+		buffer.formatstr("%s = \"%s\"",
+					ATTR_ECS_TAG_NAMES, tagNames.print_to_delimed_string(","));
 		InsertJobExpr(buffer.Value());
 	}
 
@@ -4504,6 +4885,7 @@ int SubmitHash::SetExecutable()
 	if ( JobUniverse == CONDOR_UNIVERSE_VM ||
 		 ( JobUniverse == CONDOR_UNIVERSE_GRID &&
 		   ( gridType == "ec2" ||
+		   	 gridType == "ecs" ||
 			 gridType == "gce"  ||
 			 gridType == "boinc" ) ) ) {
 		ignore_it = true;
@@ -4907,6 +5289,7 @@ int SubmitHash::SetUniverse()
 				gridType == "condor" ||
 				gridType == "nordugrid" ||
 				gridType == "ec2" ||
+				gridType == "ecs" ||
 				gridType == "gce" ||
 				gridType == "unicore" ||
 				gridType == "boinc" ||
@@ -4919,7 +5302,7 @@ int SubmitHash::SetUniverse()
 			} else {
 
 				push_error(stderr, "Invalid value '%s' for grid type\n"
-					"Must be one of: gt2, gt5, pbs, lsf, sge, nqs, condor, nordugrid, unicore, ec2, gce, cream, or boinc\n",
+					"Must be one of: gt2, gt5, pbs, lsf, sge, nqs, condor, nordugrid, unicore, ec2, ecs, gce, cream, or boinc\n",
 					JobGridType.Value() );
 				ABORT_AND_RETURN( 1 );
 			}
