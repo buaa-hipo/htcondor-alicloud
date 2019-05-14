@@ -249,6 +249,34 @@
 #define SUBMIT_KEY_EC2IamProfileArn "ec2_iam_profile_arn"
 #define SUBMIT_KEY_EC2IamProfileName "ec2_iam_profile_name"
 
+//
+// ECS Query Parameters
+//
+#define SUBMIT_KEY_ECSAccessKeyId "ecs_access_key_id"
+#define SUBMIT_KEY_ECSSecretAccessKey "ecs_secret_access_key"
+#define SUBMIT_KEY_ECSAmiID "ecs_ami_id"
+#define SUBMIT_KEY_ECSUserData "ecs_user_data"
+#define SUBMIT_KEY_ECSUserDataFile "ecs_user_data_file"
+#define SUBMIT_KEY_ECSSecurityGroups "ecs_security_groups"
+#define SUBMIT_KEY_ECSSecurityIDs "ecs_security_ids"
+#define SUBMIT_KEY_ECSKeyPair "ecs_keypair"
+#define SUBMIT_KEY_ECSKeyPairFile "ecs_keypair_file"
+#define SUBMIT_KEY_ECSKeyPairAlt "ecs_keyp_air"
+#define SUBMIT_KEY_ECSKeyPairFileAlt "ecs_key_pair_file"
+#define SUBMIT_KEY_ECSInstanceType "ecs_instance_type"
+#define SUBMIT_KEY_ECSElasticIP "ecs_elastic_ip"
+#define SUBMIT_KEY_ECSEBSVolumes "ecs_ebs_volumes"
+#define SUBMIT_KEY_ECSAvailabilityZone "ecs_availability_zone"
+#define SUBMIT_KEY_ECSVpcSubnet "ecs_vpc_subnet"
+#define SUBMIT_KEY_ECSVpcIP "ecs_vpc_ip"
+#define SUBMIT_KEY_ECSTagNames "ecs_tag_names"
+#define SUBMIT_KEY_ECSSpotPrice "ecs_spot_price"
+#define SUBMIT_KEY_ECSBlockDeviceMapping "ecs_block_device_mapping"
+#define SUBMIT_KEY_ECSParamNames "ecs_parameter_names"
+#define SUBMIT_KEY_ECSParamPrefix "ecs_parameter_"
+#define SUBMIT_KEY_ECSIamProfileArn "ecs_iam_profile_arn"
+#define SUBMIT_KEY_ECSIamProfileName "ecs_iam_profile_name"
+
 #define SUBMIT_KEY_BoincAuthenticatorFile "boinc_authenticator_file"
 
 //
