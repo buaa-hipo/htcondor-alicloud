@@ -10,7 +10,7 @@ ECSGahpClient::ECSGahpClient( const char * id, const char * path, const ArgList 
 ECSGahpClient::~ECSGahpClient() { }
 
 // Utility function.
-void
+/*void
 pushStringListBack( std::vector< YourString > & v, StringList & sl ) {
 	const char * text = NULL;
 
@@ -33,7 +33,7 @@ pushVectorBack( std::vector< YourString > & arguments, const std::vector< std::s
 		arguments.push_back( v[i] );
 	}
 	arguments.push_back( NULLSTRING );
-}
+}*/
 
 #define CHECK_COMMON_ARGUMENTS if( service_url.empty() || publickeyfile.empty() || privatekeyfile.empty() ) { return GAHPCLIENT_COMMAND_NOT_SUPPORTED; }
 #define PUSH_COMMON_ARGUMENTS arguments.push_back( service_url ); arguments.push_back( publickeyfile ); arguments.push_back( privatekeyfile );
@@ -872,12 +872,12 @@ setAttribute(	std::string & s,
 	}
 }
 
-void
+/*void
 setLastAttribute(	std::string & s,
 					const YourString & attribute,
 					const YourString & value ) {
 	setAttribute( s, attribute, value, false );
-}
+}*/
 
 void ECSGahpClient::LaunchConfiguration::convertToJSON( std::string & s ) const {
 	s.append( "{ " );
