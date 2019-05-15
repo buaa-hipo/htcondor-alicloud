@@ -145,4 +145,11 @@ const int CONDOR_HOLD_CODE_EC2ConnectionProblem = 40;
 const int CONDOR_HOLD_CODE_EC2ServerError = 41;
 const int CONDOR_HOLD_CODE_EC2InstancePotentiallyLostError = 42;
 
+const int CONDOR_HOLD_CODE_ECSUserError = 43;
+const int CONDOR_HOLD_CODE_ECSInternalError = 44;
+const int CONDOR_HOLD_CODE_ECSAdminError = 45;
+const int CONDOR_HOLD_CODE_ECSConnectionProblem = 46;
+const int CONDOR_HOLD_CODE_ECSServerError = 47;
+const int CONDOR_HOLD_CODE_ECSInstancePotentiallyLostError = 48;
+
 #endif

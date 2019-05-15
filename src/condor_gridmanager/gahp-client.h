@@ -1001,6 +1001,317 @@ class EC2GahpClient : public GahpClient {
                                  std::string & error_code );
 };
 
+
+class ECSGahpClient : public GahpClient {
+	public:
+
+		ECSGahpClient(	const char * id, const char * path, const ArgList * args );
+		~ECSGahpClient();
+
+		int describe_stacks(	const std::string & service_url,
+								const std::string & publickeyfile,
+								const std::string & privatekeyfile,
+
+								const std::string & stackName,
+
+								std::string & stackStatus,
+								std::map< std::string, std::string > & outputs,
+								std::string & errorCode );
+
+		int create_stack(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & stackName,
+							const std::string & templateURL,
+							const std::string & capability,
+							const std::map< std::string, std::string > & parameters,
+
+							std::string & stackID,
+							std::string & errorCode );
+
+		int get_function(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & functionARN,
+
+							std::string & functionHash,
+							std::string & errorCode );
+
+		int call_function(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & functionARN,
+							const std::string & argumentBlob,
+
+							std::string & returnBlob,
+							std::string & errorCode );
+
+		int put_targets(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & ruleName,
+							const std::string & id,
+							const std::string & arn,
+							const std::string & input,
+
+							std::string & errorCode );
+
+		int remove_targets(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & ruleName,
+							const std::string & id,
+
+							std::string & errorCode );
+
+		int put_rule(		const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & ruleName,
+							const std::string & scheduleExpression,
+							const std::string & state,
+
+							std::string & ruleARN,
+							std::string & error_code );
+
+		int delete_rule(	const std::string & service_url,
+							const std::string & publickeyfile,
+							const std::string & privatekeyfile,
+
+							const std::string & ruleName,
+
+							std::string & error_code );
+
+		struct LaunchConfiguration {
+			YourString ami_id;
+			YourString spot_price;
+			YourString keypair;
+			YourString user_data;
+			YourString instance_type;
+			YourString availability_zone;
+			YourString vpc_subnet;
+			YourString block_device_mapping;
+			YourString iam_profile_arn;
+			YourString iam_profile_name;
+			StringList * groupnames;
+			StringList * groupids;
+
+			YourString weighted_capacity;
+
+			LaunchConfiguration() : groupnames( NULL ), groupids( NULL ) { }
+			LaunchConfiguration(	YourString a, YourString b, YourString c,
+									YourString d, YourString f,
+									YourString g, YourString h,
+									YourString j, YourString k,
+									YourString l,
+									StringList * m, StringList * n,
+									YourString o ) :
+					ami_id( a ), spot_price( b ), keypair( c ),
+					user_data( d ), instance_type( f ),
+					availability_zone( g ), vpc_subnet( h ),
+					block_device_mapping( j ), iam_profile_arn( k ),
+					iam_profile_name( l ),
+					groupnames( m ), groupids( n ),
+					weighted_capacity( o ) { }
+
+			void convertToJSON( std::string & s ) const;
+		};
+
+		int s3_upload(	const std::string & service_url,
+						const std::string & publickeyfile,
+						const std::string & privatekeyfile,
+
+						const std::string & bucketName,
+						const std::string & fileName,
+						const std::string & path,
+
+						std::string & error_code );
+
+		int bulk_start(	const std::string & service_url,
+						const std::string & publickeyfile,
+						const std::string & privatekeyfile,
+
+						const std::string & client_token,
+						const std::string & spot_price,
+						const std::string & target_capacity,
+						const std::string & iam_fleet_role,
+						const std::string & allocation_strategy,
+						const std::string & valid_until,
+
+						const std::vector< LaunchConfiguration > & launch_configurations,
+
+						std::string & bulkRequestID,
+						std::string & error_code );
+
+		int bulk_start(	const std::string & service_url,
+						const std::string & publickeyfile,
+						const std::string & privatekeyfile,
+
+						const std::string & client_token,
+						const std::string & spot_price,
+						const std::string & target_capacity,
+						const std::string & iam_fleet_role,
+						const std::string & allocation_strategy,
+						const std::string & valid_until,
+
+						const std::vector< std::string > & launch_configurations,
+
+						std::string & bulkRequestID,
+						std::string & error_code );
+
+		int bulk_stop(	const std::string & service_url,
+						const std::string & publickeyfile,
+						const std::string & privatekeyfile,
+
+						const std::string & bulkRequestID,
+
+						std::string & error_code );
+
+		int bulk_query(	const std::string & service_url,
+						const std::string & publickeyfile,
+						const std::string & privatekeyfile,
+
+						StringList & returnStatus,
+						std::string & error_code );
+
+		int ecs_vm_start( const std::string & service_url,
+						  const std::string & publickeyfile,
+						  const std::string & privatekeyfile,
+						  const std::string & ami_id,
+						  const std::string & keypair,
+						  const std::string & user_data,
+						  const std::string & user_data_file,
+						  const std::string & instance_type,
+						  const std::string & availability_zone,
+						  const std::string & vpc_subnet,
+						  const std::string & vpc_ip,
+						  const std::string & client_token,
+						  const std::string & block_device_mapping,
+						  const std::string & iam_profile_arn,
+						  const std::string & iam_profile_name,
+						  unsigned int maxCount,
+						  StringList & groupnames,
+						  StringList & groupids,
+						  StringList & parametersAndValues,
+						  std::vector< std::string > & instance_ids,
+						  std::string & error_code );
+
+		int ecs_vm_stop( const std::string & service_url,
+						 const std::string & publickeyfile,
+						 const std::string & privatekeyfile,
+						 const std::string & instance_id,
+						 std::string & error_code );
+
+		int ecs_vm_stop( const std::string & service_url,
+						 const std::string & publickeyfile,
+						 const std::string & privatekeyfile,
+						 const std::vector< std::string > & instance_ids,
+						 std::string & error_code );
+
+		int ecs_vm_status_all( const std::string & service_url,
+							   const std::string & publickeyfile,
+							   const std::string & privatekeyfile,
+							   StringList & returnStatus,
+							   std::string & error_code );
+
+		int ecs_gahp_statistics( StringList & returnStatistics );
+
+		int ecs_ping( const std::string & service_url,
+					  const std::string & publickeyfile,
+					  const std::string & privatekeyfile,
+					  std::string & error_code );
+
+		int ecs_vm_server_type( const std::string & service_url,
+								const std::string & publickeyfile,
+								const std::string & privatekeyfile,
+								std::string & server_type,
+								std::string & error_code );
+
+		int ecs_vm_create_keypair( const std::string & service_url,
+								   const std::string & publickeyfile,
+								   const std::string & privatekeyfile,
+								   const std::string & keyname,
+								   const std::string & outputfile,
+								   std::string & error_code );
+
+		int ecs_vm_destroy_keypair( const std::string & service_url,
+									const std::string & publickeyfile,
+									const std::string & privatekeyfile,
+									const std::string & keyname,
+									std::string & error_code );
+
+        /**
+         * Used to associate an elastic ip with a running instance
+         */
+        int ecs_associate_address( const std::string & service_url,
+                                   const std::string & publickeyfile,
+                                   const std::string & privatekeyfile,
+                                   const std::string & instance_id,
+                                   const std::string & elastic_ip,
+                                   StringList & returnStatus,
+                                   std::string & error_code );
+
+		// Used to associate a tag with an resource, like a running instance
+        int ecs_create_tags( const std::string & service_url,
+							 const std::string & publickeyfile,
+							 const std::string & privatekeyfile,
+							 const std::string & instance_id,
+							 StringList & tags,
+							 StringList & returnStatus,
+							 std::string & error_code );
+
+		/**
+		 * Used to attach to an EBS volume(s).
+		 */
+		int ecs_attach_volume( const std::string & service_url,
+                               const std::string & publickeyfile,
+                               const std::string & privatekeyfile,
+                               const std::string & volume_id,
+							   const std::string & instance_id,
+                               const std::string & device_id,
+                               StringList & returnStatus,
+                               std::string & error_code );
+
+        // Is there a particular reason these aren't const references?
+        int ecs_spot_start( const std::string & service_url,
+                            const std::string & publickeyfile,
+                            const std::string & privatekeyfile,
+                            const std::string & ami_id,
+                            const std::string & spot_price,
+                            const std::string & keypair,
+                            const std::string & user_data,
+                            const std::string & user_data_file,
+                            const std::string & instance_type,
+                            const std::string & availability_zone,
+                            const std::string & vpc_subnet,
+                            const std::string & vpc_ip,
+                            const std::string & client_token,
+                            const std::string & iam_profile_arn,
+                            const std::string & iam_profile_name,
+                            StringList & groupnames,
+                            StringList & groupids,
+                            std::string & request_id,
+                            std::string & error_code );
+
+        int ecs_spot_stop( const std::string & service_url,
+                           const std::string & publickeyfile,
+                           const std::string & privatekeyfile,
+                           const std::string & request_id,
+                           std::string & error_code );
+
+        int ecs_spot_status_all( const std::string & service_url,
+                                 const std::string & publickeyfile,
+                                 const std::string & privatekeyfile,
+                                 StringList & returnStatus,
+                                 std::string & error_code );
+};
+
 // Utility functions used all over the GAHP client code.
 const char * escapeGahpString( const char * input );
 const char * escapeGahpString( const std::string & input );
