@@ -16,7 +16,7 @@
  # 
  ############################################################### 
 
-# Openssl on rhel4 don't have EVP_sha256(), which the ali_gahp uses.
+# Openssl on rhel4 don't have EVP_sha256(), which the ecs_gahp uses.
 if( EXPAT_FOUND AND HAVE_EXT_OPENSSL AND HAVE_EXT_CURL AND HAVE_EXT_PCRE AND HAVE_PTHREADS AND NOT "${SYSTEM_NAME}" MATCHES "rhel4" )
 	include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 	include_directories(${CMAKE_CURRENT_BINARY_DIR})
@@ -25,13 +25,13 @@ if( EXPAT_FOUND AND HAVE_EXT_OPENSSL AND HAVE_EXT_CURL AND HAVE_EXT_PCRE AND HAV
     condor_glob( HeaderFiles SourceFiles "queryAPI-sim.cpp" )
 
     # Build the GAHP; curl requires libz on some systems.
-	condor_exe( ali_gahp
+	condor_exe( ecs_gahp
     	"${HeaderFiles};${SourceFiles}"	${C_SBIN}
 	    "${CONDOR_TOOL_LIBS};${EXPAT_FOUND};${CURL_FOUND};${ZLIB_FOUND}"
     	OFF )
 
     # Build an executable needed by the tests.
-	condor_exe_test( queryAPI-sim-ali "queryAPI-sim.cpp" "" )
+	condor_exe_test( queryAPI-sim-ecs "queryAPI-sim.cpp" "" )
 
     set_source_files_properties(queryAPI-sim.cpp PROPERTIES COMPILE_FLAGS -Wno-deprecated)
 endif()

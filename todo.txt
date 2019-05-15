@@ -37,45 +37,54 @@ Doing a simple copy-and-rename will give you a good starting point that users ca
 
 
 
-src/condor_includes/condor_attributes.h
+src/condor_includes/condor_attributes.h [done]
 内容：EC2JOB宏定义 line934-964
 修改思路：在文件内复制一份ESC
 
-src/condor_utils/submit_utils.h
+src/condor_utils/submit_utils.h [done]
 内容：宏定义 定义了sub文件各项参数
-修改思路：在文件内复制一份ESC，增加地区项，可以选择性删除
+修改思路：在文件内复制一份ESC，[增加地区项，可以选择性删除][undo]
 
-src/condor_utils/submit_utils.cpp
+src/condor_utils/submit_utils.cpp [done]
 内容：sub文件参数检索 处理 line：3058-4929
-修改思路：在文件内复制一份ESC，增加地区项，可以选择性删除
+修改思路：在文件内复制一份ESC，删除重定义，[增加地区项，可以选择性删除][undo]
 
-src/condor_utils/param_info.in
+src/condor_utils/param_info.in [done]
 内容：配置文件 htcondor的配置项
 修改思路：在文件内复制一份ESC
 
-src/condor_gridmanager/gridmanager.cpp
+src/condor_gridmanager/gridmanager.cpp [done]
 内容：网格内容选择 line:352-368
-修改思路：添加头文件ecsjob.h 复制一份ECS，做EC2 ECS选择
+修改思路：添加头文件ecsjob.h 复制一份ECS，删除重定义
 
 
 
-src/condor_gridmanager/ec2-gahp-client.cpp
+src/condor_gridmanager/ec2-gahp-client.cpp [done]
 内容：ec2_gahp命令调用准备 将信息转化为标准ec2_gahp命令
-修改思路：复制一份整个文件，对参数项，参数个数调整
+修改思路：复制一份整个文件，修改重名函数，[对参数项，参数个数调整][undo]
 
 
-src/condor_gridmanager/ec2job.h
-src/condor_gridmanager/ec2job.cpp
+src/condor_gridmanager/ec2job.h [done]
+src/condor_gridmanager/ec2job.cpp [done]
 内容：任务运行的函数
 修改思路：复制一份，改名
 
-src/condor_gridmanager/ec2resource.h
-src/condor_gridmanager/ec2resource.cpp
+src/condor_gridmanager/ec2resource.h [done]
+src/condor_gridmanager/ec2resource.cpp [done]
 内容：密钥对以及实例状态管理
 修改思路：复制一份，改名
 
+src/condor_gridmanager/CMakeList.txt [done]
+内容：编译
+修改思路：加一份ecs
 
+src/condor_gridmanager/gahp-client.h [done]
+内容：格式规范
+修改思路：加一份ecs
 
+src/condor_utils/condor_holdcodes.h [done]
+内容：错误代码
+修改思路：错误号递增添加ECS
 
 152.136.81.156
 buaa_CS@2019
