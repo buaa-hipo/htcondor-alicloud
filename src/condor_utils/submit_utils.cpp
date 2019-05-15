@@ -3630,7 +3630,7 @@ int SubmitHash::SetGridParams()
 		ABORT_AND_RETURN( 1 );
 	}
 	
-	bool bKeyPairPresent=false;
+	bKeyPairPresent=false;
 	
 	// ECSKeyPair is not a necessary parameter
 	if( (tmp = submit_param( SUBMIT_KEY_ECSKeyPair, ATTR_ECS_KEY_PAIR )) ||
@@ -3708,7 +3708,7 @@ int SubmitHash::SetGridParams()
         InsertJobExpr( buffer.Value() );
     }
 	
-	bool HasAvailabilityZone=false;
+	HasAvailabilityZone=false;
 	// ECSAvailabilityZone is not a necessary parameter
     if( (tmp = submit_param( SUBMIT_KEY_ECSAvailabilityZone, ATTR_ECS_AVAILABILITY_ZONE )) ) {
         buffer.formatstr( "%s = \"%s\"", ATTR_ECS_AVAILABILITY_ZONE, tmp );
@@ -3782,7 +3782,7 @@ int SubmitHash::SetGridParams()
 
 	// You can only have one IAM [Instance] Profile, so you can only use
 	// one of the ARN or the Name.
-	bool bIamProfilePresent = false;
+	//bool bIamProfilePresent = false;
 	if( (tmp = submit_param( SUBMIT_KEY_ECSIamProfileArn, ATTR_ECS_IAM_PROFILE_ARN )) ) {
 		bIamProfilePresent = true;
 		buffer.formatstr( "%s = \"%s\"", ATTR_ECS_IAM_PROFILE_ARN, tmp );
@@ -3804,14 +3804,14 @@ int SubmitHash::SetGridParams()
 	//
 	// Handle arbitrary ECS RunInstances parameters.
 	//
-	StringList paramNames;
+	//StringList paramNames;
 	if( (tmp = submit_param( SUBMIT_KEY_ECSParamNames, ATTR_ECS_PARAM_NAMES )) ) {
 		paramNames.initializeFromString( tmp );
 		free( tmp );
 	}
 
-	unsigned int prefixLength = (unsigned int)strlen( SUBMIT_KEY_ECSParamPrefix );
-	HASHITER smsIter = hash_iter_begin( SubmitMacroSet );
+	prefixLength = (unsigned int)strlen( SUBMIT_KEY_ECSParamPrefix );
+	smsIter = hash_iter_begin( SubmitMacroSet );
 	for( ; ! hash_iter_done( smsIter ); hash_iter_next( smsIter ) ) {
 		const char * key = hash_iter_key( smsIter );
 
@@ -3865,7 +3865,7 @@ int SubmitHash::SetGridParams()
 		// their own case preference. Ours will always be lower-cased.
 		//
 
-	StringList tagNames;
+	//StringList tagNames;
 	if ((tmp = submit_param(SUBMIT_KEY_ECSTagNames, ATTR_ECS_TAG_NAMES))) {
 		tagNames.initializeFromString(tmp);
 		free(tmp); tmp = NULL;
@@ -3893,8 +3893,8 @@ int SubmitHash::SetGridParams()
 	}
 	hash_iter_delete(&it);
 
-	std::stringstream ss;
-	char *tagName;
+	//std::stringstream ss;
+	//char *tagName;
 	tagNames.rewind();
 	while ((tagName = tagNames.next())) {
 			// XXX: Check that tagName does not contain an equal sign (=)
