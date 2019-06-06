@@ -1,0 +1,104 @@
+
+master节点
+1.root下安装 防火墙开9618
+
+2.环境变量 centos7.6 一键安装
+yum install cmake flex byacc pcre-devel openssl-devel krb5-devel libvirt-devel bind-utils m4 libX11-devel libXScrnSaver-devel curl expat openldap-devel sqlite-devel gcc-c++ glibc-static libuuid-devel bison-devel bison libtool libtool-ltdl-devel pam-devel nss-devel libxml2-devel expat-devel perl-Archive-Tar perl-XML-Parser perl libcurl-devel libcgroup-devel boost-python systemd-devel  transfig latex2html libtool-ltdl-devel expat-devel libstdc++* boost-devel libcurl-devel flex-devel c-ares-devel python-devel transfig gcc-gfortran
+
+3.配置安装 安装时类型选主节点和提交机(主节点不推荐配置成运行机) ./condor_install --prefix=/usr/local/condor/ --type=manager,execute,submit
+
+4.安装后修改配置文件
+CONDOR_HOST = 106.13.85.37 (主节点地址)
+TCP_FORWARDING_HOST = 106.13.85.37 (对于VPC类型主节点 即ip addr查看到的地址是本地地址而不是公网地址的虚拟机，此项设置为公网地址)
+EC2_GAHP = /usr/local/condor/sbin/ali_gahp （启动虚拟机组件位置，在安装目录的sbin下）
+EC2_GAHP_LOG = /tmp/EC2GahpLog.$(USERNAME) （log文件，记录发送的和返回的请求）
+ALLOW_READ = *
+ALLOW_WRITE = *
+ALLOW_NEGOTIATOR = *
+GRIDMANAGER_DEBUG=D_FULLDEBUG （DEBUG选项）
+EC2_GAHP_DEBUG=D_FULLDEBUG（DEBUG选项）
+
+5.地区配置 一般是在北京区(cn-beijng)不同区虚拟机不能内网连接 外网应该可以  创建/usr/local/condor/config.txt来选择地区否则无法启动虚拟机
+txt文件里只用写地区代号 例如：cn-beijing  更多地区请向阿里云查询
+地区配置受网格组件影响无法方便使用
+使用绝对路径是因为使用相对路径时出现过找不到文件 若是实在无法使用上述路径请联系我源码重改或者等待改完网格部分后我会单度把这个地方抽出来改
+
+
+
+
+计算节点
+
+1.先添加用户，否则会失败。root下安装，防火墙打开9618，安装过程/环境变量同master节点
+
+2.安装类型推荐仅设置执行机，必须设置开机启动；设置方法见后面。
+
+3.配置文件增加
+CONDOR_HOST = 106.13.85.37  (主节点公网IP)
+CCB_ADDRESS = 106.13.85.37  (同样针对VPC类型)
+ALLOW_WRITE = *
+ALLOW_READ = *
+配置文件所有的local.($HOSTNAME) 改成统一的名字方便做镜像 例如 local.node
+
+4.计算节点配置好之后，先重启尝试下能不能自动启动，再测试下不通过ec2能不能体检普通作业
+
+5.所有检查完毕后，可以在控制台配置镜像，请耐心等待镜像进度100%(血泪教训)，一般会卡99%几分钟
+
+
+
+
+开机启动
+把安装目录下的 etc/init.d/condor 拷贝到 /etc/init.d/
+注意修改脚本指向正确目录
+CONDOR_CONFIG="/usr/local/condor/etc/condor_config"  (配置文件目录)
+CONDOR_CONFIG_VAL="/usr/local/condor/bin/condor_config_val"
+若是还无法启动
+参考设置服务
+https://www.cnblogs.com/h2zZhou/p/6088418.html
+https://blog.csdn.net/u013554213/article/details/78792686
+
+
+
+
+阿里云设置
+
+1.建立安全组并记录id
+2.为安全组绑定交换机并记录id
+3.下载用户keyid keyserect
+4.余额低于100将不支持按量申请虚拟机
+5.注意阿里云地区选择
+
+
+
+
+ec2作业格式
+
+universe = grid 
+grid_resource = ec2 https://ecs.aliyuncs.com （API接入口，除了这个还有几个）
+ec2_access_key_id = /home/condor/condor_test/accesskeyid-2.txt (用户的keyid可以在控制台下载)
+ec2_secret_access_key = /home/condor/condor_test/accesskeysecret-2.txt (用户的keysecret可以在控制台下载)
+ec2_ami_id = m-2ze0w869gg72gu61my4h (镜像id，软件配置)
+ec2_vpc_subnet = vsw-2ze4oqvho9xjy4rvxm539 （交换机id）
+ec2_security_ids = sg-2ze7skefrz52k3caqhzd (安全组id)
+ec2_instance_type = ecs.g5.large （机器类型，硬件配置 猜测可以自由换同系统高低配置 ecs.g5.large是centos7.6最低配置）
+ec2_keypair_file = /home/condor/test.key （自动启动虚拟机会保留一份key到这个路径 可供登陆计算节点检查 ip可在控制台看）
+executable = helloworld （并不会执行程序，仅相当于一个标记）
+output = ec2.out
+error = ec2.err
+log = ec2.log
+queue
+
+
+
+
+其他说明 
+
+已经配置了一个计算节点样板 ip 39.96.13.206  password bhcs_2019
+因去年欠费每隔一段时间会被回收 可在控制台重新开启
+
+对于磁盘大小(默认40G) 磁盘类型 磁盘容量 网络带宽若是有要求可以提供源码修改 
+网格部分完成后会统一扩展接口更新
+
+
+
+BUAA 魏一
+mail:2399680964@qq.com
